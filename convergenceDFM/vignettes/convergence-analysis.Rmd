@@ -1,0 +1,60 @@
+---
+title: "Introduction to Convergence Analysis with convergenceDFM"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Introduction to Convergence Analysis with convergenceDFM}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+```{r setup}
+library(convergenceDFM)
+```
+
+## Introduction
+
+The `convergenceDFM` package provides a comprehensive framework for analyzing
+economic convergence using Dynamic Factor Models (DFM) and Factor 
+Ornstein-Uhlenbeck processes.
+
+## Basic Usage
+```{r example, eval=FALSE}
+# Load example data
+data("example_marxist_data")
+
+# Run complete analysis
+results <- run_complete_factor_analysis_robust(
+  X_matrix = marxist_prices[, -1],
+  Y_matrix = bayesian_cpi[, -1],
+  max_comp = 3,
+  dfm_lags = 1,
+  ou_chains = 4,
+  ou_iter = 2000
+)
+
+# View results
+summary(results)
+```
+
+## Convergence Tests
+
+The package includes several convergence tests:
+
+1. **Formal convergence tests**: Unit root tests, cointegration
+2. **Robustness tests**: Permutation, reweighting, jackknife
+3. **Rotation null tests**: Testing coupling between factor spaces
+
+## Visualization
+```{r viz, eval=FALSE}
+# Visualize factor dynamics
+visualize_factor_dynamics(
+  dfm_result = results$dfm,
+  ou_result = results$factor_ou,
+  factors_data = results$factors
+)
+```
