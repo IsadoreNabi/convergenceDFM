@@ -19,7 +19,7 @@ rescue_short_run_channel(
 
 \item{lag}{Number of lags for the model (default: 1)}
 
-\item{B}{Number of bootstrap iterations (default: 1000)}
+\item{B}{Number of null replicates (default: 1000)}
 
 \item{seed}{Random seed for reproducibility (default: NULL)}
 
@@ -32,15 +32,21 @@ rescue_short_run_channel(
 \value{
 List with components:
 \describe{
-\item{\code{granger_p}}{P-values from Granger causality tests.}
-\item{\code{OOS}}{List with out-of-sample RMSE comparison.}
-\item{\code{p_values}}{Bootstrap p-values for RMSE differences.}
+\item{\code{p_values}, \code{p_values_fdr}}{Coupling p-values (time-shift
+null) and their Benjamini-Hochberg adjustment.}
+\item{\code{OOS}}{Out-of-sample RMSE/R2 comparison plus the Clark-West
+test (\code{cw_stat}, \code{cw_p}).}
+\item{\code{granger_p}}{Granger causality p-value.}
+\item{\code{observed}, \code{sim_quantiles}, \code{null_stats}}{Coupling
+statistics and their null distributions.}
 }
 }
 \description{
-Evaluates the short-run causal relationship from X to Y factors using Granger
-causality tests and out-of-sample forecast comparison.
-}
-\details{
-testing. Default is 0.2.
+Evaluates the short-run relationship from X to Y factors using three
+complementary, valid pieces of evidence: (1) a coupling null obtained by
+circularly time-shifting the X residual (breaking its alignment with Y while
+preserving its own autocorrelation -- the rotation-based null used previously
+was invariant and therefore vacuous); (2) an expanding-window out-of-sample
+comparison of forecasts with and without lagged X, with a Clark-West test of
+the improvement; and (3) a Granger causality test.
 }

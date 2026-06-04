@@ -2,7 +2,7 @@
 % Please edit documentation in R/factor_ou.R
 \name{estimate_factor_OU}
 \alias{estimate_factor_OU}
-\title{Estimate Factor Ornstein-Uhlenbeck model (Stan if available)}
+\title{Estimate Factor Ornstein-Uhlenbeck / AR(1) model (Stan if available)}
 \usage{
 estimate_factor_OU(
   factors_data,
@@ -10,7 +10,7 @@ estimate_factor_OU(
   chains = 4,
   iter = 2000,
   seed = 1234,
-  adapt1 = 0.98,
+  adapt1 = 0.95,
   adapt2 = 0.999,
   mtd1 = 12,
   mtd2 = 15,
@@ -22,35 +22,52 @@ estimate_factor_OU(
 
 \item{data_prep}{Optional preprocessed data (reserved).}
 
-\item{chains, iter, seed}{Stan sampling controls.}
+\item{chains, iter, seed}{Stan sampling controls. \code{iter} is the total per
+chain; warmup is \code{floor(iter/2)} with a floor that guarantees at least
+100 post-warmup draws.}
 
-\item{adapt1, adapt2, mtd1, mtd2}{Advanced Stan controls.}
+\item{adapt1, mtd1}{\code{adapt_delta} and \code{max_treedepth} for the first
+run.}
+
+\item{adapt2, mtd2}{\code{adapt_delta} and \code{max_treedepth} used for an
+automatic re-run if the first run shows divergent transitions or poor mixing.}
 
 \item{verbose}{Logical; print progress/details.}
 }
 \value{
 A list with posterior medians (\eqn{\phi}, \eqn{\mu}, \eqn{\beta}),
-half-lives, coupling strength, pseudo-R2, and the fitted Stan object.
+half-lives, coupling strength, pseudo-R2, MCMC convergence diagnostics
+(\code{diagnostics}: max R-hat, min ESS, divergences) and the fitted Stan
+object.
 }
 \description{
-Estimates a multivariate OU with cross-equation coupling \eqn{Y_{t}} depending
-on lagged \eqn{X_{t-1}} via a \eqn{\beta} matrix. Uses \pkg{cmdstanr} when
+Estimates a Bayesian multivariate, discrete-time mean-reverting model
+(a first-order vector autoregression with cross-equation coupling) in which
+\eqn{Y_t} depends on its own lag and on lagged \eqn{X_{t-1}} through a
+\eqn{\beta} matrix. This is the discrete-time analogue of a coupled
+Ornstein-Uhlenbeck system; see the vignette section "Methodological notes" for
+the exact mapping \eqn{\phi = e^{-\kappa \Delta t}}. Uses \pkg{cmdstanr} when
 available, otherwise \pkg{rstan}, with a discrete AR(1) fallback.
 }
+\section{Convergence is testable, not assumed}{
+
+The persistence \eqn{\phi} is \emph{not} constrained to \eqn{(0,1)}: it is
+given a generous support and a weakly-informative, convergence-neutral prior
+(\code{normal(0.5, 0.5)}), so the posterior can place mass on unit-root or
+mildly explosive dynamics. Mean reversion (convergence) is therefore a
+conclusion supported by the data, not an artefact of the parameterization.
+}
+
 \examples{
 \donttest{
-  # Create toy factor data
   set.seed(123)
-  n <- 50
+  n <- 60
   X_scores <- matrix(rnorm(n * 2), n, 2)
   Y_scores <- matrix(rnorm(n * 2), n, 2)
   factors_data <- list(scores_X = X_scores, scores_Y = Y_scores)
-  
-  # Estimate OU model (reduce iterations for speed)
-  ou_result <- estimate_factor_OU(factors_data, chains = 2, iter = 500, 
-                                   verbose = FALSE)
-  
-  # Check half-lives
+  ou_result <- estimate_factor_OU(factors_data, chains = 2, iter = 600,
+                                  verbose = FALSE)
   print(ou_result$half_lives_Y)
+  print(ou_result$diagnostics)
 }
 }

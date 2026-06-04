@@ -20,19 +20,24 @@ read_cpi <- function(path_cpi) {
   
   df <- readxl::read_excel(path_cpi)
   cn <- tolower(names(df))
-  
-  col_date <- which.max(stringr::str_detect(cn, "date|year|anio|period"))
-  col_cpi <- which.max(stringr::str_detect(cn, "cpi|indice|price|ipc"))
-  
-  if (length(col_date) == 0 || length(col_cpi) == 0) {
-    stop("No date or CPI columns found")
+
+  # which.max() on a logical returns 1 even when nothing matches, which silently
+  # selected the first column. Use which() and fail cleanly if no column matches.
+  date_hits <- which(stringr::str_detect(cn, "date|year|anio|period"))
+  cpi_hits  <- which(stringr::str_detect(cn, "cpi|indice|price|ipc"))
+
+  if (length(date_hits) == 0 || length(cpi_hits) == 0) {
+    stop("No date or CPI columns found (looked for date/year/anio/period and ",
+         "cpi/indice/price/ipc in the column names).", call. = FALSE)
   }
-  
+  col_date <- date_hits[1]
+  col_cpi  <- cpi_hits[1]
+
   df <- df %>%
     transmute(
-      Year = as.integer(substr(as.character(.[[col_date]]), 1, 4)),
+      Year = as.integer(stringr::str_extract(as.character(.[[col_date]]), "\\d{4}")),
       CPI = to_num_commas(.[[col_cpi]])
-    ) %>% 
+    ) %>%
     filter(!is.na(Year), !is.na(CPI)) %>% 
     arrange(Year)
   
@@ -103,10 +108,11 @@ read_weights_matrix <- function(path_weights) {
   )
 }
 
-#' Likelihood weights from a weight matrix via SVD
+#' Cross-sectional data weights from a weight matrix via SVD
 #'
-#' Uses the first right singular vector (absolute value) as cross-sectional
-#' weights and normalizes to sum to one.
+#' Uses the first right singular vector (absolute value) of the centred matrix as
+#' cross-sectional data weights, normalized to sum to one. (Despite historical
+#' naming, this is a heuristic data weight, not a statistical likelihood.)
 #'
 #' @param P Numeric matrix (T x K).
 #' @return Numeric vector of length K.
@@ -120,13 +126,15 @@ compute_L_from_P <- function(P) {
   l / sum(l)
 }
 
-#' Likelihood weights from a weight matrix via SVD
+#' Distribute cross-sectional data weights over time
 #'
-#' Uses the first right singular vector (absolute value) as cross-sectional
-#' weights and normalizes to sum to one.
+#' Spreads a length-K weight vector \code{L} across \code{T_periods} according to
+#' a temporal emphasis pattern, then row-normalizes.
 #'
-#' @param P Numeric matrix (T x K).
-#' @return Numeric vector of length K.
+#' @param L Numeric vector of length K (cross-sectional weights).
+#' @param T_periods Integer number of periods.
+#' @param pattern Temporal emphasis: "recent", "constant", "linear" or "bell".
+#' @return T x K row-normalized matrix.
 #' @keywords internal
 #' @noRd
 
@@ -147,15 +155,23 @@ spread_likelihood <- function(L, T_periods, pattern = c("recent", "constant", "l
 }
 
 
-#' Weighted posterior update of weights
+#' Convex blend of two weight matrices
 #'
-#' Blends prior \code{P} with time-distributed likelihood \code{LT} via convex
-#' combination.
+#' Blends a base weight matrix \code{P} with a time-distributed data-weight matrix
+#' \code{LT} as a convex combination \code{lambda * P + (1 - lambda) * LT}, then
+#' row-normalizes.
 #'
-#' @param P Prior T x K matrix.
-#' @param LT T x K likelihood matrix.
+#' @section Naming note:
+#' This is a deterministic convex blend, not a Bayesian posterior: there is no
+#' likelihood function and no application of Bayes' rule. The historical names
+#' (`posterior_weighted`, "Bayesian updating") are kept for backward
+#' compatibility but the operation is a weighting heuristic. See the vignette
+#' section "Methodological notes".
+#'
+#' @param P Base T x K matrix.
+#' @param LT T x K data-weight matrix.
 #' @param lambda Mixing parameter between 0 and 1.
-#' @return Updated T x K matrix with row sums equal to 1.
+#' @return Blended T x K matrix with row sums equal to 1.
 #' @keywords internal
 #' @noRd
 
@@ -163,30 +179,29 @@ posterior_weighted <- function(P, LT, lambda = 0.7) {
   row_norm1(lambda * P + (1 - lambda) * LT)
 }
 
-#' Disaggregate CPI using custom prior and Bayesian updating
+#' Disaggregate CPI using a custom prior and a convex weight blend
 #'
-#' Reads CPI and industry weights, optionally replaces weights with a custom prior,
-#' and derives a time-consistent disaggregation matrix.
+#' Reads CPI and industry weights, optionally replaces the weights with a custom
+#' prior, and derives a time-consistent disaggregation matrix via a convex blend
+#' (see \code{posterior_weighted}; this is not a formal Bayesian posterior).
 #'
 #' @param path_cpi Path to CPI Excel.
 #' @param path_weights Path to weights Excel.
 #' @param custom_prior Optional length-K numeric prior (sums to 1).
 #' @param method Character; reserved for future methods (\code{"weighted"}).
-#' @param lambda Mixing weight for posterior update.
+#' @param lambda Mixing weight for the convex blend.
+#' @param verbose Logical; print progress.
 #' @return A list with \code{Y_matrix}, \code{industries}, \code{years}.
 #' @examples
 #' # out <- run_disaggregation_custom_prior("cpi.xlsx","weights.xlsx")
 #' @keywords internal
 #' @noRd
 
-# Función corregida con el parámetro verbose agregado
-# Reemplazá tu función actual con esta versión
-
 run_disaggregation_custom_prior <- function(path_cpi, path_weights,
                                             custom_prior = NULL,
                                             method = "weighted",
                                             lambda = 0.7,
-                                            verbose = FALSE) {  # PARÁMETRO AGREGADO
+                                            verbose = FALSE) {
   
   cpi <- read_cpi(path_cpi)
   Wraw <- read_weights_matrix(path_weights)

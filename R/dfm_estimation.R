@@ -13,21 +13,38 @@
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{var_fit}}{Fitted VAR model on combined factors.}
+#'     \item{\code{var_model}}{Fitted VAR model (\code{vars::varest}).}
 #'     \item{\code{p_used}}{VAR lag order used.}
-#'     \item{\code{robust_se}}{Matrices of robust standard errors.}
-#'     \item{\code{diagnostics}}{List of diagnostic tests (stability, serial correlation).}
-#'     \item{\code{oos_metrics}}{Out-of-sample forecast evaluation (if requested).}
+#'     \item{\code{roots}, \code{is_stable}}{Companion-root moduli and stability flag.}
+#'     \item{\code{half_lives}, \code{half_life_dominant}}{Per-root half-lives and
+#'       the half-life of the largest-modulus (slowest) root, which governs
+#'       system persistence.}
+#'     \item{\code{r2_eq}, \code{r2_adj_eq}, \code{r2_global}}{In-sample R2.}
+#'     \item{\code{r2_oos_eq}, \code{r2_oos_global}, \code{mse_oos_eq}}{Out-of
+#'       -sample diagnostics (if requested), reported \emph{unclipped}.}
+#'     \item{\code{robust_se}}{Per-equation list of robust standard errors.}
+#'     \item{\code{robust_inference}}{Per-equation list of \code{coef}, \code{se},
+#'       \code{t}, \code{p} from HC/HAC robust inference.}
+#'     \item{\code{portmanteau_p}}{Portmanteau serial-correlation p-value.}
+#'     \item{\code{hc_type}}{The HC type used.}
 #'   }
 #'
 #' @details This function models the joint dynamics of X and Y factors using a VAR.
 #'   It performs stability checks, tests for serial correlation, computes robust
 #'   standard errors, and optionally evaluates forecast performance out-of-sample.
+#'   Robust covariance uses \pkg{sandwich}/\pkg{lmtest} when available and a
+#'   self-contained HC (HC0-HC4) implementation otherwise. Because the factors are
+#'   PLS scores (supervised on Y), in-sample fit is optimistic; rely on the
+#'   out-of-sample diagnostics. See the vignette section "Methodological notes".
+#'
+#' @param hac Logical. If \code{TRUE} and \pkg{sandwich} is installed, use a
+#'   heteroskedasticity- and autocorrelation-consistent (Newey-West) covariance
+#'   instead of HC. Default \code{FALSE}.
 #'
 #' @export
 
-estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3", 
-                         verbose = TRUE) {
+estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3",
+                         hac = FALSE, verbose = TRUE) {
   if (verbose) {
     message("========================================")
     message("DYNAMIC FACTOR MODEL (DFM)")
@@ -80,63 +97,71 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
   rts <- vars::roots(fit, modulus = TRUE)
   is_stable <- all(rts < 1 - 1e-6)
   hl <- ifelse(rts < 1, log(0.5) / log(rts), Inf)
-  
+  # System persistence is governed by the slowest (largest-modulus) root.
+  dom_root <- max(rts)
+  half_life_dominant <- if (dom_root < 1) log(0.5) / log(dom_root) else Inf
+
   pt_val <- NA_real_
-  pt <- tryCatch(
+  pt_test <- tryCatch(
     vars::serial.test(fit, lags.pt = 12, type = "PT.asymptotic"),
     error = function(e) NULL
   )
-  if (!is.null(pt) && !is.null(pt$serial$p.value)) {
-    pt_val <- pt$serial$p.value
+  if (!is.null(pt_test) && !is.null(pt_test$serial$p.value)) {
+    pt_val <- pt_test$serial$p.value
   }
   
-  if (verbose) message("\nCalculating robust standard errors (", hc_type, ")...")
-  
+  cov_label <- if (hac) "HAC (Newey-West)" else hc_type
+  if (verbose) message("\nCalculating robust standard errors (", cov_label, ")...")
+
   robust_se_list <- list()
+  robust_inference <- list()
   n_success <- 0
-  
+
   for (eq_name in names(fit$varresult)) {
     eq_model <- fit$varresult[[eq_name]]
-    
+
     n_obs <- length(residuals(eq_model))
     n_coef <- length(coef(eq_model))
-    
+
     if (n_obs <= n_coef + 1) {
       if (verbose) message("  ", eq_name, ": Insufficient degrees of freedom")
       next
     }
-    
-    hc_result <- calculate_hc_manual(eq_model, type = hc_type)
-    
+
+    hc_result <- calculate_hc_manual(eq_model, type = hc_type, hac = hac)
+
     if (hc_result$success) {
       se_hc <- hc_result$se
       coef_vals <- coef(eq_model)
-      
+
       min_len <- min(length(se_hc), length(coef_vals))
       se_hc <- se_hc[1:min_len]
       coef_vals <- coef_vals[1:min_len]
-      
+
       t_stats <- coef_vals / se_hc
       df_resid <- df.residual(eq_model)
       p_vals <- if (df_resid > 0) {
-        2 * pt(abs(t_stats), df = df_resid, lower.tail = FALSE)
+        2 * stats::pt(abs(t_stats), df = df_resid, lower.tail = FALSE)
       } else {
-        rep(NA, length(t_stats))
+        rep(NA_real_, length(t_stats))
       }
-      
+
       robust_se_list[[eq_name]] <- se_hc
+      robust_inference[[eq_name]] <- data.frame(
+        coef = coef_vals, se = se_hc, t = t_stats, p = p_vals
+      )
       n_sig <- sum(p_vals < 0.05, na.rm = TRUE)
       if (verbose) {
-        message("  ", eq_name, ": ", n_sig, "/", length(p_vals), 
-                " coefs significativos (p<0.05)")
+        message("  ", eq_name, ": ", n_sig, "/", length(p_vals),
+                " significant coefficients (p < 0.05)")
       }
       n_success <- n_success + 1
     }
   }
   
   if (verbose && n_success > 0) {
-    message("\nOK: Robust errors calculated for ", n_success, "/", 
-            length(fit$varresult), " ecuaciones")
+    message("\nOK: Robust errors calculated for ", n_success, "/",
+            length(fit$varresult), " equations")
   }
   
   vm <- fit
@@ -203,8 +228,10 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
           sst_oos <- sum((oos_actuals[valid_idx, j] - 
                             mean(oos_actuals[valid_idx, j]))^2)
           if (sst_oos > 1e-10) {
+            # Report the raw out-of-sample R2 (can be strongly negative when the
+            # model forecasts worse than the in-sample mean); do not floor it,
+            # as that would hide overfitting/instability.
             r2_oos_eq[j] <- 1 - sse_oos / sst_oos
-            r2_oos_eq[j] <- max(-2, min(1, r2_oos_eq[j]))
           }
         }
       }
@@ -220,7 +247,6 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
                                        byrow = TRUE))^2)
         if (sst_oos_total > 1e-10) {
           r2_oos_global <- 1 - sse_oos_total / sst_oos_total
-          r2_oos_global <- max(-2, min(1, r2_oos_global))
         }
       }
       
@@ -246,7 +272,10 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
     
     finite_hl <- hl[is.finite(hl)]
     if (length(finite_hl) > 0) {
-      message("- Median half-life: ", round(stats::median(finite_hl), 2), " periods")
+      message("- Median half-life: ", round(stats::median(finite_hl), 2),
+              " periods | Dominant-root half-life: ",
+              if (is.finite(half_life_dominant)) round(half_life_dominant, 2) else "Inf",
+              " periods")
     }
     
     msg <- paste0("- In-Sample GLOBAL R2: ", round(R2_global, 3))
@@ -262,6 +291,7 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
     roots = rts,
     is_stable = is_stable,
     half_lives = hl,
+    half_life_dominant = half_life_dominant,
     r2_eq = r2_eq,
     r2_adj_eq = adj_eq,
     r2_global = R2_global,
@@ -271,6 +301,9 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
     r2_oos_global = r2_oos_global,
     mse_oos_eq = mse_oos_eq,
     robust_se = robust_se_list,
+    robust_inference = robust_inference,
+    portmanteau_p = pt_val,
+    hc_type = hc_type,
     original_names_X = original_names_X,
     original_names_Y = original_names_Y
   )
@@ -279,58 +312,78 @@ estimate_DFM <- function(factors_data, p = 2, compute_oos = TRUE, hc_type = "HC3
 #' Calculate heteroskedasticity-consistent covariance matrix
 #'
 #' Computes HC (sandwich) standard errors for linear model coefficients with
-#' support for HC0, HC1, HC2, HC3, and HC4 variants.
+#' support for HC0, HC1, HC2, HC3 and HC4 variants. When \pkg{sandwich} is
+#' installed it is used (it is the reference implementation and also provides the
+#' HAC / Newey-West estimator); otherwise a self-contained HC implementation is
+#' used. The previous version silently degraded "HC4" to HC0; HC4 is now
+#' implemented explicitly via leverage-dependent exponents.
 #'
 #' @param lm_model Fitted linear model object.
-#' @param type Character string. HC type: "HC0", "HC1", "HC2", "HC3" (default), or "HC4".
+#' @param type Character string. HC type: "HC0", "HC1", "HC2", "HC3" (default)
+#'   or "HC4".
+#' @param hac Logical. If \code{TRUE} and \pkg{sandwich} is available, return a
+#'   HAC (Newey-West) covariance instead of HC.
 #'
-#' @return Covariance matrix with HC standard errors.
+#' @return List with \code{success}, and on success \code{vcov} and \code{se}.
 #'
 #' @keywords internal
 #' @noRd
 
-calculate_hc_manual <- function(lm_model, type = "HC3") {
+calculate_hc_manual <- function(lm_model, type = "HC3", hac = FALSE) {
+  type <- match.arg(type, c("HC0", "HC1", "HC2", "HC3", "HC4"))
+
+  # Preferred path: the well-tested sandwich/lmtest implementation.
+  if (requireNamespace("sandwich", quietly = TRUE)) {
+    res <- tryCatch({
+      vc <- if (hac) sandwich::NeweyWest(lm_model, prewhite = FALSE)
+            else sandwich::vcovHC(lm_model, type = type)
+      se <- sqrt(diag(vc))
+      if (any(!is.finite(se))) stop("non-finite SE")
+      list(success = TRUE, vcov = vc, se = se)
+    }, error = function(e) NULL)
+    if (!is.null(res)) return(res)
+  }
+
+  # Self-contained HC fallback (no HAC support here).
   tryCatch({
     X <- model.matrix(lm_model)
     n <- nrow(X)
     k <- ncol(X)
     e <- residuals(lm_model)
-    
+
     if (n <= k) {
       return(list(success = FALSE, error = "n <= k"))
     }
-    
+
     XtX_inv <- tryCatch(
       solve(crossprod(X)),
-      error = function(e) {
-        solve(crossprod(X) + diag(1e-10, ncol(X)))
-      }
+      error = function(err) solve(crossprod(X) + diag(1e-10, ncol(X)))
     )
-    
-    if (type %in% c("HC2", "HC3")) {
-      h <- rowSums((X %*% XtX_inv) * X)
-      h <- pmin(h, 0.9999)
-    }
-    
+
+    # Leverages, needed by HC2/HC3/HC4.
+    h <- rowSums((X %*% XtX_inv) * X)
+    h <- pmin(h, 0.9999)
+    delta <- pmin(4, n * h / k)          # HC4 exponent (Cribari-Neto, 2004)
+
     weights <- switch(type,
                       "HC0" = e^2,
                       "HC1" = e^2 * (n / (n - k)),
                       "HC2" = e^2 / (1 - h),
                       "HC3" = e^2 / ((1 - h)^2),
-                      e^2
+                      "HC4" = e^2 / ((1 - h)^delta)
     )
-    
+
     weights[!is.finite(weights)] <- 0
     meat <- crossprod(X * sqrt(weights))
     vcov_hc <- XtX_inv %*% meat %*% XtX_inv
     se_hc <- sqrt(diag(vcov_hc))
-    
+
     if (any(!is.finite(se_hc))) {
       return(list(success = FALSE, error = "No Finite SE"))
     }
-    
+
     list(success = TRUE, vcov = vcov_hc, se = se_hc)
-    
+
   }, error = function(e) {
     list(success = FALSE, error = e$message)
   })

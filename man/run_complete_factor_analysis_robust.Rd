@@ -14,10 +14,13 @@ run_complete_factor_analysis_robust(
   sector_names = NULL,
   max_comp = 3,
   dfm_lags = 1,
-  ou_chains = 10,
-  ou_iter = 10000,
+  ou_chains = 4,
+  ou_iter = 2000,
   skip_ou = FALSE,
   run_convergence_tests = TRUE,
+  make_plots = FALSE,
+  plot_file = NULL,
+  seed = 123,
   path_cpi = NULL,
   path_weights = NULL,
   verbose = TRUE
@@ -28,13 +31,13 @@ run_complete_factor_analysis_robust(
 
 \item{Y_matrix}{Matrix of second set of variables}
 
-\item{TMG}{Optional TMG matrix (default: NULL)}
+\item{TMG}{Optional total Marxist gross output (default: NULL)}
 
-\item{COM_matrix}{Optional COM matrix (default: NULL)}
+\item{COM_matrix}{Optional commodity-composition matrix (default: NULL)}
 
-\item{SPVR_matrix}{Optional SPVR matrix (default: NULL)}
+\item{SPVR_matrix}{Optional surplus-value-rate matrix (default: NULL)}
 
-\item{CA}{Optional CA parameter (default: NULL)}
+\item{CA}{Optional additional covariates (default: NULL)}
 
 \item{sector_names}{Vector of sector names (default: NULL)}
 
@@ -42,13 +45,21 @@ run_complete_factor_analysis_robust(
 
 \item{dfm_lags}{Number of lags for DFM (default: 1)}
 
-\item{ou_chains}{Number of MCMC chains for OU estimation (default: 10)}
+\item{ou_chains}{Number of MCMC chains for OU estimation (default: 4)}
 
-\item{ou_iter}{Number of MCMC iterations (default: 10000)}
+\item{ou_iter}{Number of MCMC iterations (default: 2000)}
 
 \item{skip_ou}{Logical, skip OU estimation (default: FALSE)}
 
 \item{run_convergence_tests}{Logical, run convergence tests (default: TRUE)}
+
+\item{make_plots}{Logical, draw the factor-dynamics figure (default: FALSE).
+When \code{TRUE} and \code{plot_file} is set, the figure is written to that
+PDF; otherwise it is drawn on the current device.}
+
+\item{plot_file}{Optional path for the saved figure (default: NULL).}
+
+\item{seed}{Integer master seed for the stochastic steps (default: 123).}
 
 \item{path_cpi}{Path to CPI data (default: NULL)}
 
@@ -59,72 +70,46 @@ run_complete_factor_analysis_robust(
 \value{
 List with components:
 \describe{
-\item{\code{factors}}{List containing PLS-extracted factors (scores_X, scores_Y)
-and related objects (pls_X, pls_Y, ncomp_X, ncomp_Y).}
-\item{\code{dfm}}{List with DFM estimation results including VAR fit, lag order,
-diagnostics, and optional impulse responses.}
-\item{\code{factor_ou}}{List with Factor-OU model estimates: beta, lambda,
-sigma, half_life, method used, and optional Stan fit object.}
-\item{\code{convergence_tests}}{List with formal convergence test results
+\item{\code{data_prep}}{Scaled (possibly auxiliary-augmented) X and Y.}
+\item{\code{selection}}{PLS component selection (see
+\code{\link{select_optimal_components_safe}}).}
+\item{\code{factors}}{PLS-extracted factors (\code{scores_X},
+\code{scores_Y}) and interpretation.}
+\item{\code{dfm}}{DFM/VAR estimation (see \code{\link{estimate_DFM}}).}
+\item{\code{factor_ou}}{Factor-OU/AR(1) estimates (see
+\code{\link{estimate_factor_OU}}), including MCMC diagnostics.}
+\item{\code{convergence_tests}}{Convergence and robustness test results
 (if \code{run_convergence_tests = TRUE}).}
-\item{\code{robustness_tests}}{List with robustness test results (if
-\code{run_robustness_tests = TRUE}).}
-\item{\code{diagnostics}}{List with data diagnostics (multicollinearity,
-stationarity, structural breaks).}
-\item{\code{bayesian_cpi}}{List with Bayesian disaggregation results (if
-CPI paths provided).}
-\item{\code{metadata}}{List with analysis metadata (timestamp, versions,
-parameters).}
 }
 }
 \description{
 Executes the end-to-end analysis workflow: data preparation, PLS-based factor
-extraction, DFM estimation, Factor-OU estimation, convergence tests, and
+extraction, DFM estimation, Factor-OU/AR(1) estimation, convergence tests, and
 robustness checks. This is the main user-facing function.
 }
 \details{
-uses column names of \code{X_matrix}.
-and reweighting tests). Can be \code{NULL}.
-
-This function orchestrates the complete analysis:
-\enumerate{
-\item Data validation and diagnostics
-\item Bayesian CPI disaggregation (if applicable)
-\item PLS-based factor extraction with optimal component selection
-\item Dynamic Factor Model estimation via VAR
-\item Factor Ornstein-Uhlenbeck mean-reversion model
-\item Formal convergence tests (stationarity, cointegration, speed)
-\item Robustness tests (permutation, reweighting, jackknife)
-}
+This function orchestrates the complete analysis: data validation,
+PLS factor extraction, VAR-based DFM, Bayesian factor-OU/AR(1), convergence
+tests (stationary band on phi, Johansen cointegration, residual unit-root
+with caveats) and robustness tests (time-shift permutation, reweighting,
+delete-one-sector jackknife). Plotting is opt-in (\code{make_plots}); by
+default no graphics device is opened and no file is written, so the function
+is safe in batch/non-interactive use.
 }
 \examples{
 \donttest{
-# Basic usage with simulated data
 set.seed(123)
 X <- matrix(rnorm(100 * 10), 100, 10)
 Y <- X + matrix(rnorm(100 * 10, 0, 0.5), 100, 10)
 
 results <- run_complete_factor_analysis_robust(
-  X_matrix = X,
-  Y_matrix = Y,
-  max_comp = 3,
-  dfm_lags = 1,
-  ou_chains = 4,
-  ou_iter = 2000,
+  X_matrix = X, Y_matrix = Y,
+  max_comp = 3, dfm_lags = 1,
+  skip_ou = TRUE,        # set FALSE to run the Bayesian factor-OU model
   verbose = FALSE
 )
-
-# View convergence summary
-summary(results$convergence_tests)
-
-# Visualize results
-visualize_factor_dynamics(
-  dfm_result = results$dfm,
-  ou_result = results$factor_ou,
-  factors_data = results$factors
-)
+str(results$dfm$r2_global)
 }
-
 
 }
 \seealso{

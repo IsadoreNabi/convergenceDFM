@@ -21,22 +21,21 @@ visualize_factor_dynamics(
 
 \item{factors_data}{Data frame with factor information}
 
-\item{save_plot}{Logical, save plot to file (default: FALSE)}
+\item{save_plot}{Logical, save plot to a PDF file (default: FALSE)}
 
-\item{plot_file}{File name for saved plot (default: 'factor_dynamics.pdf')}
+\item{plot_file}{File name for the saved plot. If \code{save_plot = TRUE} and
+this is \code{NULL}, a file in \code{tempdir()} is used (with a message).
+Default \code{NULL}.}
 
-\item{use_device}{Graphics device to use: 'default', 'pdf', 'png' (default: 'default')}
+\item{use_device}{Graphics device to use: 'default', 'pdf', 'none' (default: 'default')}
 
 \item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
 }
 \value{
-Invisibly returns \code{NULL}. Called for side effect of creating plots.
+Invisibly returns \code{TRUE} when all four panels were created.
 }
 \description{
-Creates a multi-panel visualization summarizing all aspects of the factor
-model: scores over time, loadings, correlations, OU dynamics, and convergence
-patterns.
-}
-\details{
-Default is \code{NULL} (display only).
+Creates a multi-panel visualization summarizing the factor model: X and Y
+factor scores over time and the DFM and OU half-lives. Plotting is a side
+effect; nothing is written unless \code{save_plot = TRUE}.
 }

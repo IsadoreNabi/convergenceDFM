@@ -63,34 +63,40 @@ visualize_factor_dynamics_simple <- function(factors_data, output_file = NULL, v
 
 #' Visualize factor dynamics comprehensively
 #'
-#' Creates a multi-panel visualization summarizing all aspects of the factor
-#' model: scores over time, loadings, correlations, OU dynamics, and convergence
-#' patterns.
+#' Creates a multi-panel visualization summarizing the factor model: X and Y
+#' factor scores over time and the DFM and OU half-lives. Plotting is a side
+#' effect; nothing is written unless \code{save_plot = TRUE}.
 #'
-#'   Default is \code{NULL} (display only).
-#'
-#' @return Invisibly returns \code{NULL}. Called for side effect of creating plots.
-#'
+#' @return Invisibly returns \code{TRUE} when all four panels were created.
 #'
 #' @param dfm_result Result object from DFM analysis
 #' @param ou_result Result object from OU estimation
 #' @param factors_data Data frame with factor information
-#' @param save_plot Logical, save plot to file (default: FALSE)
-#' @param plot_file File name for saved plot (default: 'factor_dynamics.pdf')
-#' @param use_device Graphics device to use: 'default', 'pdf', 'png' (default: 'default')
+#' @param save_plot Logical, save plot to a PDF file (default: FALSE)
+#' @param plot_file File name for the saved plot. If \code{save_plot = TRUE} and
+#'   this is \code{NULL}, a file in \code{tempdir()} is used (with a message).
+#'   Default \code{NULL}.
+#' @param use_device Graphics device to use: 'default', 'pdf', 'none' (default: 'default')
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
 #' @export
 
-visualize_factor_dynamics <- function(dfm_result, ou_result, factors_data, 
-                                      save_plot = FALSE, 
+visualize_factor_dynamics <- function(dfm_result, ou_result, factors_data,
+                                      save_plot = FALSE,
                                       plot_file = NULL,
                                       use_device = "default",
                                       verbose = TRUE) {
-  
+
   if (verbose) {
     message("Visualizing factor dynamics...")
   }
-  
+
+  # Guard: writing requires a file name. Fall back to a temp file rather than
+  # calling pdf(NULL), which would error.
+  if ((save_plot || identical(use_device, "pdf")) && is.null(plot_file)) {
+    plot_file <- file.path(tempdir(), "factor_dynamics.pdf")
+    if (verbose) message("  No plot_file given; saving to ", plot_file)
+  }
+
   open_graphics_device <- function(use_device) {
     device_opened <- FALSE
     

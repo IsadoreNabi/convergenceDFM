@@ -2,7 +2,7 @@
 % Please edit documentation in R/robustness_tests.R
 \name{test_jackknife_sectors}
 \alias{test_jackknife_sectors}
-\title{Jackknife robustness test by sector}
+\title{Delete-one-sector jackknife of the X->Y coupling}
 \usage{
 test_jackknife_sectors(
   X_matrix,
@@ -10,38 +10,45 @@ test_jackknife_sectors(
   sector_names = NULL,
   k_exclude = 3,
   max_comp = 3,
+  seed = 123,
   verbose = TRUE
 )
 }
 \arguments{
-\item{X_matrix}{Matrix of first set of variables}
+\item{X_matrix}{Matrix of first set of variables (sectors in columns)}
 
-\item{Y_matrix}{Matrix of second set of variables}
+\item{Y_matrix}{Matrix of second set of variables (sectors in columns)}
 
-\item{sector_names}{Vector of sector names (default: NULL)}
+\item{sector_names}{Vector of sector names (default: column names of Y)}
 
-\item{k_exclude}{Number of sectors to exclude in each iteration (default: 3)}
+\item{k_exclude}{Number of most-influential sectors to report (default: 3)}
 
 \item{max_comp}{Maximum number of components (default: 3)}
+
+\item{seed}{Optional integer for reproducible component selection/diagnostics.}
 
 \item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
 }
 \value{
 List with components:
 \describe{
-\item{\code{jackknife_estimates}}{Matrix of lambda estimates (iterations x factors).}
-\item{\code{original_estimate}}{Original lambda from full sample.}
-\item{\code{bias}}{Estimated jackknife bias.}
-\item{\code{se}}{Jackknife standard errors.}
-\item{\code{influential_sectors}}{Character vector of highly influential sectors.}
-\item{\code{dfbetas}}{Matrix of influence measures (DFBETAS).}
+\item{\code{baseline}}{Full-sample coupling.}
+\item{\code{jackknife_estimates}}{Named vector of delete-one coupling
+estimates.}
+\item{\code{bias}}{Jackknife bias estimate \code{(n-1)(mean(jk) - full)}.}
+\item{\code{se}}{Jackknife standard error.}
+\item{\code{influence}}{Per-sector change \code{full - jk_i} (signed).}
+\item{\code{retention}}{Per-sector \code{jk_i / full}.}
+\item{\code{influential_sectors}}{The \code{k_exclude} most influential
+sectors.}
+\item{\code{robust}}{\code{TRUE} if no single sector changes the coupling
+by more than 50 percent.}
 }
 }
 \description{
-Assesses the influence of individual sectors by systematically dropping each
-sector and re-estimating convergence parameters. Identifies influential
-sectors and checks stability.
-}
-\details{
-column names.
+Genuine leave-one-sector-out jackknife: each sector (column) is dropped in
+turn from both X and Y, the coupling is re-estimated, and the delete-one
+replicates are used to compute the jackknife bias and standard error and to
+rank sectors by influence. (The previous version dropped the top-\code{k}
+highest-variance sectors a single time and was not a jackknife.)
 }

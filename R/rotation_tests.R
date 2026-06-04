@@ -1,7 +1,9 @@
-#' Generate random orthogonal matrix
+#' Generate a Haar-uniform random orthogonal matrix
 #'
-#' Generates a random orthogonal matrix of size k x k using QR decomposition
-#' of a random Gaussian matrix.
+#' Generates a random orthogonal matrix of size k x k from the QR decomposition
+#' of a Gaussian matrix, with the sign correction of Mezzadri (2007) so that the
+#' result is uniform on the orthogonal group (the raw \code{qr.Q} output is not,
+#' because LAPACK fixes the signs of the R diagonal).
 #'
 #' @param k Integer. Matrix dimension.
 #'
@@ -11,10 +13,91 @@
 #' @noRd
 
 random_orthogonal <- function(k) {
-  Z <- matrix(rnorm(k*k), k, k)
-  Q <- qr.Q(qr(Z))
-  if (det(Q) < 0) Q[,1] <- -Q[,1]
+  Z <- matrix(rnorm(k * k), k, k)
+  qrz <- qr(Z)
+  Q <- qr.Q(qrz)
+  R <- qr.R(qrz)
+  d <- diag(R)
+  ph <- ifelse(d == 0, 1, sign(d))
+  Q <- Q * rep(ph, each = k)        # Haar correction
+  if (det(Q) < 0) Q[, 1] <- -Q[, 1] # restrict to SO(k)
   Q
+}
+
+#' Circularly shift the rows of a matrix
+#'
+#' Wraps the rows of \code{M} by \code{tau} positions. Used to build a null that
+#' destroys cross-series temporal alignment while preserving each series' own
+#' (circular) autocorrelation structure -- the appropriate null for testing
+#' coupling with rotation-invariant statistics.
+#'
+#' @param M Numeric matrix (T x k).
+#' @param tau Integer shift in \code{1..T-1}.
+#' @return Row-shifted matrix.
+#' @keywords internal
+#' @noRd
+
+circ_shift_rows <- function(M, tau) {
+  Tn <- nrow(M)
+  if (Tn < 2L) return(M)
+  tau <- ((tau %% Tn) + Tn) %% Tn
+  if (tau == 0L) tau <- 1L
+  idx <- ((seq_len(Tn) - 1L + tau) %% Tn) + 1L
+  M[idx, , drop = FALSE]
+}
+
+#' One-sided HAC test that the mean of a loss-differential series is positive
+#'
+#' @param d Numeric vector of per-period loss differentials.
+#' @return List with \code{stat} (asymptotically N(0,1)), one-sided \code{p}, and
+#'   the effective length \code{n}.
+#' @keywords internal
+#' @noRd
+hac_mean_test <- function(d) {
+  d <- d[is.finite(d)]
+  n <- length(d)
+  if (n < 8) return(list(stat = NA_real_, p = NA_real_, n = n))
+  dbar <- mean(d)
+  dc <- d - dbar
+  L <- max(1L, floor(4 * (n / 100)^(2 / 9)))   # Bartlett bandwidth
+  lrv <- sum(dc^2) / n
+  for (l in seq_len(L)) {
+    w <- 1 - l / (L + 1)
+    gl <- sum(dc[(l + 1):n] * dc[1:(n - l)]) / n
+    lrv <- lrv + 2 * w * gl
+  }
+  if (!is.finite(lrv) || lrv <= 0) return(list(stat = NA_real_, p = NA_real_, n = n))
+  stat <- dbar / sqrt(lrv / n)
+  list(stat = stat, p = stats::pnorm(stat, lower.tail = FALSE), n = n)
+}
+
+#' Diebold-Mariano / Clark-West test for nested out-of-sample forecasts
+#'
+#' One-sided test that the larger model (with X) improves squared-error loss over
+#' the nested baseline. For nested models the Clark-West adjustment is used;
+#' otherwise the standard Diebold-Mariano statistic, both via a HAC long-run
+#' variance.
+#'
+#' @param e_base,e_full Numeric vectors of one-step forecast errors (baseline and
+#'   full model), same length.
+#' @param yhat_base,yhat_full Optional forecast values, required for the
+#'   Clark-West adjustment when \code{nested = TRUE}.
+#' @param nested Logical; use the Clark-West adjustment.
+#' @return List with \code{stat} (asymptotically N(0,1)) and one-sided \code{p}.
+#' @keywords internal
+#' @noRd
+
+dm_cw_test <- function(e_base, e_full, yhat_base = NULL, yhat_full = NULL,
+                       nested = TRUE) {
+  ok <- is.finite(e_base) & is.finite(e_full)
+  e_base <- e_base[ok]; e_full <- e_full[ok]
+  if (nested && !is.null(yhat_base) && !is.null(yhat_full)) {
+    yhat_base <- yhat_base[ok]; yhat_full <- yhat_full[ok]
+    d <- e_base^2 - e_full^2 + (yhat_base - yhat_full)^2   # Clark-West
+  } else {
+    d <- e_base^2 - e_full^2                               # Diebold-Mariano
+  }
+  hac_mean_test(d)
 }
 
 #' Orthonormalize matrix via QR
@@ -188,157 +271,183 @@ extract_scores_from_results <- function(results_robust) {
   stop("No scores_X/scores_Y found in results_robust or pls_model.")
 }
 
-#' Rotation null hypothesis test for factor coupling
+#' Null hypothesis test for X->Y factor coupling
 #'
-#' Tests whether the observed correlation structure between X and Y factor spaces
-#' is significantly stronger than would be expected under random orthogonal rotations.
+#' Tests whether the observed association between the lagged X factor space and
+#' the Y factor space is stronger than expected when the X->Y temporal alignment
+#' is broken.
 #'
-#'   (contemporaneous).
-#'   "spearman", or "kendall".
+#' @section Why not a rotation null:
+#' The coupling statistics used here (Procrustes nuclear-norm ratio, canonical
+#' correlations, principal angles, dynamic-beta Frobenius norm) are
+#' \emph{invariant} to orthogonal rotation of either factor space: rotating Y by
+#' an orthogonal matrix leaves all of them unchanged, so a rotation-based null is
+#' degenerate (its "distribution" is a point mass at the observed value and every
+#' p-value is ~1). The default null (\code{null_method = "circular_shift"})
+#' instead applies a random circular time shift to Y, which preserves each
+#' series' own autocorrelation while destroying the cross-series alignment -- the
+#' statistics then genuinely vary under the null. \code{null_method = "rotation"}
+#' is retained only as an invariance diagnostic and will (correctly) yield
+#' non-significant results.
+#'
+#' @param scores_X Factor scores from the first dataset (T x Kx).
+#' @param scores_Y Factor scores from the second dataset (T x Ky).
+#' @param lag Number of lags for the X->Y relationship (default 1).
+#' @param B Number of null replicates (default 1000).
+#' @param seed Random seed for reproducibility (default 123). The RNG state is
+#'   restored on exit.
+#' @param compute Statistics to compute: any of 'procrustes', 'cca', 'principal',
+#'   'dynbeta'.
+#' @param null_method Null-generating mechanism: "circular_shift" (default) or
+#'   "rotation" (invariance diagnostic only).
+#' @param progress Logical, show progress bar (default TRUE).
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{observed}}{Observed correlation statistics.}
-#'     \item{\code{null_distribution}}{Matrix of statistics under null rotations.}
-#'     \item{\code{p_values}}{One-sided p-values for each statistic.}
-#'     \item{\code{significant}}{Logical indicating significance at alpha = 0.05.}
+#'     \item{\code{observed}}{Observed statistics.}
+#'     \item{\code{null_stats}}{List of length-\code{B} null vectors per statistic.}
+#'     \item{\code{p_values}}{Monte Carlo one-sided p-values \code{(1 + #{null >=
+#'       obs}) / (B + 1)}.}
+#'     \item{\code{p_values_fdr}}{Benjamini-Hochberg FDR-adjusted p-values.}
+#'     \item{\code{params}}{Test settings, including the seed and null method.}
 #'   }
-#'
-#'
-#' @param scores_X Factor scores from first dataset
-#' @param scores_Y Factor scores from second dataset
-#' @param lag Number of lags for the model (default: 1)
-#' @param B Number of bootstrap iterations (default: 1000)
-#' @param seed Random seed for reproducibility (default: 123)
-#' @param compute Vector of methods to compute: 'procrustes', 'cca', 'principal', 'dynbeta'
-#' @param progress Logical, show progress bar (default: TRUE)
-#' @param rotate Which dataset to rotate: 'X' or 'Y' (default: 'Y')
 #' @export
 
-rotation_null_test <- function(scores_X, scores_Y, lag=1, B=1000, seed=123,
-                               compute=c("procrustes","cca","principal","dynbeta"),
-                               progress=TRUE, rotate="Y") {
+rotation_null_test <- function(scores_X, scores_Y, lag = 1, B = 1000, seed = 123,
+                               compute = c("procrustes", "cca", "principal", "dynbeta"),
+                               null_method = c("circular_shift", "rotation"),
+                               progress = TRUE) {
+  null_method <- match.arg(null_method)
+
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+
   X <- as.matrix(scores_X); Y <- as.matrix(scores_Y)
-  stopifnot(nrow(X)==nrow(Y))
-  Tn <- nrow(X); if (Tn <= lag) stop("Serie muy corta para el lag.")
-  Xl <- X[1:(Tn-lag), , drop=FALSE]
-  Yt <- Y[(lag+1):Tn, , drop=FALSE]
-  
-  observed <- list()
-  if ("procrustes" %in% compute) observed$procrustes <- procrustes_metric(Xl, Yt)
-  if ("cca"        %in% compute) observed$cca        <- cca_metric(Xl, Yt)
-  if ("principal"  %in% compute) observed$principal  <- principal_angles_metric(Xl, Yt)
-  if ("dynbeta"    %in% compute) observed$dynbeta    <- dyn_beta_norm(Y, X, lag)
-  
-  nstats <- list(
-    procrustes_R = numeric(B),
-    cca_sumr2    = numeric(B),
-    cca_maxr     = numeric(B),
-    princ_sum2   = numeric(B),
-    princ_max    = numeric(B),
-    dynbeta      = numeric(B)
-  )
-  if (progress) pb <- txtProgressBar(min=0, max=B, style=3)
+  stopifnot(nrow(X) == nrow(Y))
+  Tn <- nrow(X); if (Tn <= lag + 1) stop("Series too short for the requested lag.")
+
+  # All coupling statistics for a given (X, Y) pair, returned as a named vector.
+  compute_stats <- function(Xfull, Yfull) {
+    Xl <- Xfull[1:(Tn - lag), , drop = FALSE]
+    Yt <- Yfull[(lag + 1):Tn, , drop = FALSE]
+    out <- c(procrustes_R = NA_real_, cca_sumr2 = NA_real_, cca_maxr = NA_real_,
+             princ_sum2 = NA_real_, princ_max = NA_real_, dynbeta = NA_real_)
+    if ("procrustes" %in% compute) out["procrustes_R"] <- procrustes_metric(Xl, Yt)$R
+    if ("cca" %in% compute) {
+      cc <- cca_metric(Xl, Yt); out["cca_sumr2"] <- cc$sum_r2; out["cca_maxr"] <- cc$max_r
+    }
+    if ("principal" %in% compute) {
+      pa <- principal_angles_metric(Xl, Yt)
+      out["princ_sum2"] <- pa$sum_cos2; out["princ_max"] <- pa$max_cos
+    }
+    if ("dynbeta" %in% compute) out["dynbeta"] <- dyn_beta_norm(Yfull, Xfull, lag)
+    out
+  }
+
+  obs_vec <- compute_stats(X, Y)
+  stat_names <- names(obs_vec)
+  null_mat <- matrix(NA_real_, B, length(stat_names),
+                     dimnames = list(NULL, stat_names))
+
+  if (progress) pb <- txtProgressBar(min = 0, max = B, style = 3)
   for (b in seq_len(B)) {
-    if (rotate=="Y") {
-      R <- random_orthogonal(ncol(Y))
-      Yrot <- Y %*% R
-      Yt_r <- Yrot[(lag+1):Tn,,drop=FALSE]
-    } else if (rotate=="X") {
-      R <- random_orthogonal(ncol(X))
-      Xrot <- X %*% R
-      Xl   <- Xrot[1:(Tn-lag),,drop=FALSE]
-      Yt_r <- Yt
-    } else {
-      Ry <- random_orthogonal(ncol(Y)); Rx <- random_orthogonal(ncol(X))
-      Yt_r <- (Y %*% Ry)[(lag+1):Tn,,drop=FALSE]
-      Xl   <- (X %*% Rx)[1:(Tn-lag), ,drop=FALSE]
+    if (null_method == "circular_shift") {
+      tau <- sample.int(Tn - 1L, 1L)
+      Yb <- circ_shift_rows(Y, tau)
+    } else {                       # rotation: invariance diagnostic
+      Yb <- Y %*% random_orthogonal(ncol(Y))
     }
-    
-    if ("procrustes" %in% compute) nstats$procrustes_R[b] <- procrustes_metric(Xl, Yt_r)$R
-    if ("cca"        %in% compute) {
-      cc <- cca_metric(Xl, Yt_r)
-      nstats$cca_sumr2[b] <- cc$sum_r2; nstats$cca_maxr[b] <- cc$max_r
-    }
-    if ("principal"  %in% compute) {
-      pa <- principal_angles_metric(Xl, Yt_r)
-      nstats$princ_sum2[b] <- pa$sum_cos2; nstats$princ_max[b] <- pa$max_cos
-    }
-    if ("dynbeta"    %in% compute) {
-      if (rotate=="Y") nstats$dynbeta[b] <- dyn_beta_norm(Y %*% R, X, lag)
-      else if (rotate=="X") nstats$dynbeta[b] <- dyn_beta_norm(Y, X %*% R, lag)
-      else nstats$dynbeta[b] <- dyn_beta_norm(Y %*% Ry, X %*% Rx, lag)
-    }
+    null_mat[b, ] <- compute_stats(X, Yb)
     if (progress) setTxtProgressBar(pb, b)
   }
   if (progress) close(pb)
-  
-  pvals <- list()
-  if ("procrustes" %in% compute)
-    pvals$procrustes_R <- mean(nstats$procrustes_R >= observed$procrustes$R)
-  if ("cca" %in% compute) {
-    pvals$cca_sumr2 <- mean(nstats$cca_sumr2 >= observed$cca$sum_r2)
-    pvals$cca_maxr  <- mean(nstats$cca_maxr  >= observed$cca$max_r)
-  }
-  if ("principal" %in% compute) {
-    pvals$princ_sum2 <- mean(nstats$princ_sum2 >= observed$principal$sum_cos2)
-    pvals$princ_max  <- mean(nstats$princ_max  >= observed$principal$max_cos)
-  }
-  if ("dynbeta" %in% compute)
-    pvals$dynbeta <- mean(nstats$dynbeta >= observed$dynbeta)
-  
-  list(observed=observed, null_stats=nstats, p_values=pvals,
-       params=list(B=B, lag=lag, rotate=rotate, seed=seed))
+
+  # Monte Carlo one-sided p-values with the (1 + .)/(B + 1) correction.
+  pvals <- vapply(stat_names, function(nm) {
+    if (!is.finite(obs_vec[[nm]])) return(NA_real_)
+    nd <- null_mat[, nm]; nd <- nd[is.finite(nd)]
+    if (!length(nd)) return(NA_real_)
+    (1 + sum(nd >= obs_vec[[nm]])) / (length(nd) + 1)
+  }, numeric(1))
+
+  keep <- !is.na(pvals)
+  pvals_fdr <- pvals
+  if (any(keep)) pvals_fdr[keep] <- stats::p.adjust(pvals[keep], method = "BH")
+
+  observed <- list(
+    procrustes = list(R = obs_vec[["procrustes_R"]]),
+    cca        = list(sum_r2 = obs_vec[["cca_sumr2"]], max_r = obs_vec[["cca_maxr"]]),
+    principal  = list(sum_cos2 = obs_vec[["princ_sum2"]], max_cos = obs_vec[["princ_max"]]),
+    dynbeta    = obs_vec[["dynbeta"]]
+  )
+  null_stats <- as.list(as.data.frame(null_mat))
+
+  list(observed = observed, observed_vec = obs_vec,
+       null_stats = null_stats, p_values = as.list(pvals),
+       p_values_fdr = as.list(pvals_fdr),
+       params = list(B = B, lag = lag, null_method = null_method, seed = seed))
 }
 
-#' Run rotation null test on complete analysis results
+#' Run the coupling null test on complete analysis results
 #'
-#' Wrapper function that extracts factors from a complete analysis object and
-#' runs the rotation null test.
+#' Wrapper that extracts factors from a complete analysis object and runs
+#' \code{\link{rotation_null_test}} with the corrected time-shift null.
 #'
+#' @return List. Output from \code{\link{rotation_null_test}}.
 #'
-#' @return List. Output from \code{rotation_null_test}.
-#'
-#'
-#' @param results_robust Output from run_complete_factor_analysis_robust()
-#' @param lag Number of lags for the model (default: 1)
-#' @param B Number of bootstrap iterations (default: 1000)
-#' @param seed Random seed for reproducibility (default: 42)
-#' @param rotate Which dataset to rotate: 'X' or 'Y' (default: 'Y')
-#' @param compute Vector of methods to compute: 'procrustes', 'cca', 'principal', 'dynbeta'
+#' @param results_robust Output from \code{run_complete_factor_analysis_robust()}.
+#' @param lag Number of lags for the X->Y relationship (default 1).
+#' @param B Number of null replicates (default 1000).
+#' @param seed Random seed for reproducibility (default 42).
+#' @param null_method Null mechanism passed to \code{rotation_null_test()};
+#'   "circular_shift" (default) or "rotation" (diagnostic).
+#' @param compute Statistics to compute: 'procrustes', 'cca', 'principal',
+#'   'dynbeta'.
 #' @export
 
-run_rotation_null_on_results <- function(results_robust, lag=1, B=1000, seed=42,
-                                         rotate="Y",
-                                         compute=c("procrustes","cca","principal","dynbeta")) {
+run_rotation_null_on_results <- function(results_robust, lag = 1, B = 1000, seed = 42,
+                                         null_method = c("circular_shift", "rotation"),
+                                         compute = c("procrustes", "cca", "principal", "dynbeta")) {
+  null_method <- match.arg(null_method)
   sc <- extract_scores_from_results(results_robust)
   Tn <- min(nrow(sc$scores_X), nrow(sc$scores_Y))
-  sc$scores_X <- sc$scores_X[seq_len(Tn),,drop=FALSE]
-  sc$scores_Y <- sc$scores_Y[seq_len(Tn),,drop=FALSE]
-  out <- rotation_null_test(sc$scores_X, sc$scores_Y, lag=lag, B=B, seed=seed,
-                            compute=compute, rotate=rotate)
+  sc$scores_X <- sc$scores_X[seq_len(Tn), , drop = FALSE]
+  sc$scores_Y <- sc$scores_Y[seq_len(Tn), , drop = FALSE]
+  out <- rotation_null_test(sc$scores_X, sc$scores_Y, lag = lag, B = B, seed = seed,
+                            compute = compute, null_method = null_method)
   results_robust$convergence_tests$rotation_null <- out
   out
 }
 
 #' Rescue short-run channel test
 #'
-#' Evaluates the short-run causal relationship from X to Y factors using Granger
-#' causality tests and out-of-sample forecast comparison.
-#'
-#'   testing. Default is 0.2.
+#' Evaluates the short-run relationship from X to Y factors using three
+#' complementary, valid pieces of evidence: (1) a coupling null obtained by
+#' circularly time-shifting the X residual (breaking its alignment with Y while
+#' preserving its own autocorrelation -- the rotation-based null used previously
+#' was invariant and therefore vacuous); (2) an expanding-window out-of-sample
+#' comparison of forecasts with and without lagged X, with a Clark-West test of
+#' the improvement; and (3) a Granger causality test.
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{granger_p}}{P-values from Granger causality tests.}
-#'     \item{\code{OOS}}{List with out-of-sample RMSE comparison.}
-#'     \item{\code{p_values}}{Bootstrap p-values for RMSE differences.}
+#'     \item{\code{p_values}, \code{p_values_fdr}}{Coupling p-values (time-shift
+#'       null) and their Benjamini-Hochberg adjustment.}
+#'     \item{\code{OOS}}{Out-of-sample RMSE/R2 comparison plus the Clark-West
+#'       test (\code{cw_stat}, \code{cw_p}).}
+#'     \item{\code{granger_p}}{Granger causality p-value.}
+#'     \item{\code{observed}, \code{sim_quantiles}, \code{null_stats}}{Coupling
+#'       statistics and their null distributions.}
 #'   }
-#'
 #'
 #' @param results_robust Output from run_complete_factor_analysis_robust()
 #' @param lag Number of lags for the model (default: 1)
-#' @param B Number of bootstrap iterations (default: 1000)
+#' @param B Number of null replicates (default: 1000)
 #' @param seed Random seed for reproducibility (default: NULL)
 #' @param ridge Ridge regularization parameter (default: 0.001)
 #' @param oos_start Proportion of data to use for training (default: 0.6)
@@ -347,12 +456,17 @@ run_rotation_null_on_results <- function(results_robust, lag=1, B=1000, seed=42,
 
 rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = NULL,
                                      ridge = 1e-3, oos_start = 0.6, verbose = TRUE) {
-  if (!is.null(seed)) set.seed(seed)
-  on.exit({ set.seed(NULL) }, add = TRUE)
-  
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+
   fx <- tryCatch(as.matrix(results_robust$factors$scores_X), error = function(e) NULL)
   fy <- tryCatch(as.matrix(results_robust$factors$scores_Y), error = function(e) NULL)
-  if (is.null(fx) || is.null(fy)) stop("No se encontraron scores_X / scores_Y en results_robust$factors.")
+  if (is.null(fx) || is.null(fy)) stop("scores_X / scores_Y not found in results_robust$factors.")
   
   Tn <- min(nrow(fx), nrow(fy))
   fx <- fx[1:Tn, , drop = FALSE]
@@ -421,21 +535,25 @@ rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = N
   
   nboot <- as.integer(B)
   if (verbose) {
-    message(sprintf("Generating null by conditional orthogonal rotations (B=%d)...", nboot))
+    message(sprintf("Generating null by circular time-shift of the X residual (B=%d)...", nboot))
   }
-  rand_ortho <- function(k) { Z <- matrix(rnorm(k * k), k, k); qr.Q(qr(Z)) }
-  
+
   procr_n     <- numeric(nboot)
   cca_sum2_n  <- numeric(nboot)
   cca_max_n   <- numeric(nboot)
   princ_sum2_n<- numeric(nboot)
   princ_max_n <- numeric(nboot)
   dynbeta_n   <- numeric(nboot)
-  
+
+  nX <- nrow(X_res)
   for (b in seq_len(nboot)) {
-    Ox    <- rand_ortho(kx)
-    X_rot <- X_res %*% Ox
-    
+    # Break the X->Y alignment while preserving X's own autocorrelation.
+    # The SAME shift is applied to the residual (subspace metrics) and to the
+    # raw lagged X (dynamic-beta), so all statistics use a coherent null draw.
+    tau_b <- sample.int(max(2L, nX) - 1L, 1L)
+    X_rot   <- circ_shift_rows(X_res, tau_b)
+    Xlag_b  <- circ_shift_rows(Xlag,  tau_b)
+
     Qxr <- orth(X_rot)
     Sr  <- svd(t(Qxr[, 1:rdim, drop = FALSE]) %*% Qy[, 1:rdim, drop = FALSE])$d
     Sr  <- pmin(pmax(Sr, 0), 1)
@@ -457,20 +575,28 @@ rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = N
     svals_r <- svd(cross_r)$d
     procr_n[b] <- sum(svals_r) / sqrt(sum(X_rot^2) * sum(Y_res^2) + 1e-12)
     
-    fit_r <- ridge_fit(cbind(Ylag, X_rot), Yt, lambda = ridge)
+    fit_r <- ridge_fit(cbind(Ylag, Xlag_b), Yt, lambda = ridge)
     Br    <- fit_r$B
     BXr   <- Br[1 + ky + seq_len(kx), , drop = FALSE]
     dynbeta_n[b] <- sqrt(sum(BXr^2))
   }
-  
+
+  mc_p <- function(null, obs) {
+    null <- null[is.finite(null)]
+    if (!length(null) || !is.finite(obs)) return(NA_real_)
+    (1 + sum(null >= obs)) / (length(null) + 1)
+  }
   pvals <- c(
-    procrustes_R = mean(procr_n    >= procr_R_obs),
-    cca_sumr2    = mean(cca_sum2_n >= cca$sum_r2),
-    cca_maxr     = mean(cca_max_n  >= cca$max_r),
-    princ_sum2   = mean(princ_sum2_n >= princ_sum2_obs),
-    princ_max    = mean(princ_max_n  >= princ_max_obs),
-    dynbeta      = mean(dynbeta_n    >= dynbeta_obs)
+    procrustes_R = mc_p(procr_n,     procr_R_obs),
+    cca_sumr2    = mc_p(cca_sum2_n,  cca$sum_r2),
+    cca_maxr     = mc_p(cca_max_n,   cca$max_r),
+    princ_sum2   = mc_p(princ_sum2_n, princ_sum2_obs),
+    princ_max    = mc_p(princ_max_n,  princ_max_obs),
+    dynbeta      = mc_p(dynbeta_n,    dynbeta_obs)
   )
+  pvals_fdr <- pvals
+  keep <- is.finite(pvals)
+  if (any(keep)) pvals_fdr[keep] <- stats::p.adjust(pvals[keep], method = "BH")
   
   observed <- list(
     procrustes = list(R = as.numeric(procr_R_obs)),
@@ -499,36 +625,44 @@ rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = N
   start_idx <- max(5, floor(Tobs * oos_start))
   if (start_idx >= Tobs) start_idx <- floor(Tobs * 0.7)
   
-  err_y <- c(); err_yx <- c(); y_oos <- matrix(NA, Tobs - start_idx, ky)
+  err_y <- c(); err_yx <- c(); cw_adj <- c()
+  y_oos <- matrix(NA, Tobs - start_idx, ky)
   row <- 0
   for (i in (start_idx + 1):Tobs) {
     tr <- 1:(i - 1); te <- i
-    
+
     fit_b <- ridge_fit(Ylag[tr, , drop = FALSE], Yt[tr, , drop = FALSE], lambda = ridge)
     pred_b <- cbind(1, Ylag[te, , drop = FALSE]) %*% fit_b$B
-    
+
     fit_a <- ridge_fit(cbind(Ylag[tr, , drop = FALSE], Xlag[tr, , drop = FALSE]),
                        Yt[tr, , drop = FALSE], lambda = ridge)
     pred_a <- cbind(1, Ylag[te, , drop = FALSE], Xlag[te, , drop = FALSE]) %*% fit_a$B
-    
+
     row <- row + 1
     y_oos[row, ] <- Yt[te, , drop = FALSE]
     err_y  <- c(err_y,  sum((Yt[te, ] - pred_b)^2))
     err_yx <- c(err_yx, sum((Yt[te, ] - pred_a)^2))
+    cw_adj <- c(cw_adj, sum((pred_b - pred_a)^2))   # Clark-West adjustment
   }
   rmse_y  <- sqrt(mean(err_y))
   rmse_yx <- sqrt(mean(err_yx))
   sst <- sum((y_oos - matrix(colMeans(y_oos), nrow(y_oos), ky, byrow = TRUE))^2)
   r2_oos_y  <- 1 - sum(err_y)  / sst
   r2_oos_yx <- 1 - sum(err_yx) / sst
-  
+
+  # Clark-West test that adding lagged X significantly improves the (nested) OOS
+  # forecast -- replaces the bare RMSE delta with an inferential statement.
+  cw <- hac_mean_test(err_y - err_yx + cw_adj)
+
   OOS <- list(
     rmse_y = as.numeric(rmse_y),
     rmse_yx = as.numeric(rmse_yx),
     delta_rmse_pct = 100 * (rmse_y - rmse_yx) / rmse_y,
     r2_oos_y = as.numeric(r2_oos_y),
     r2_oos_yx = as.numeric(r2_oos_yx),
-    delta_r2_oos = as.numeric(r2_oos_yx - r2_oos_y)
+    delta_r2_oos = as.numeric(r2_oos_yx - r2_oos_y),
+    cw_stat = cw$stat,
+    cw_p = cw$p
   )
   
   gr_p <- NA
@@ -544,6 +678,7 @@ rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = N
   
   list(
     p_values = pvals,
+    p_values_fdr = pvals_fdr,
     observed = observed,
     sim_quantiles = sim_quant,
     null_stats = list(
@@ -555,7 +690,8 @@ rescue_short_run_channel <- function(results_robust, lag = 1, B = 1000, seed = N
       dynbeta = dynbeta_n
     ),
     OOS = OOS,
-    granger_p = matrix(gr_p, nrow = 1, dimnames = list(NULL, "p_value"))
+    granger_p = matrix(gr_p, nrow = 1, dimnames = list(NULL, "p_value")),
+    null_method = "circular_shift"
   )
 }
 
@@ -663,51 +799,60 @@ deltaR2_ou <- function(results_robust, lag = 1, oos = TRUE, seed = 123,
     t0 <- max(20, floor(T_eff * 0.5))
     errs_r <- matrix(NA_real_, T_eff - t0, Ky)
     errs_f <- matrix(NA_real_, T_eff - t0, Ky)
+    dpred  <- matrix(NA_real_, T_eff - t0, Ky)   # yhat_restricted - yhat_full
     y_act  <- matrix(NA_real_, T_eff - t0, Ky)
-    
+
     for (t in t0:(T_eff - 1)) {
       Y1_tr <- Y1[1:t, , drop = FALSE]
       Y0_tr <- Y0[1:t, , drop = FALSE]
       X0_tr <- X0[1:t, , drop = FALSE]
-      
+
       Br_t <- solve_ridge(Y0_tr, Y1_tr)
       Bf_t <- solve_ridge(cbind(Y0_tr, X0_tr), Y1_tr)
-      
+
       y_next <- Y1[t + 1, , drop = FALSE]
       y0_next <- Y0[t + 1, , drop = FALSE]
       x0_next <- X0[t + 1, , drop = FALSE]
-      
+
       yhat_r <- y0_next %*% Br_t
       yhat_f <- cbind(y0_next, x0_next) %*% Bf_t
-      
+
       idx <- t - t0 + 1
       errs_r[idx, ] <- y_next - yhat_r
       errs_f[idx, ] <- y_next - yhat_f
+      dpred[idx, ]  <- yhat_r - yhat_f
       y_act[idx, ]  <- y_next
     }
-    
+
     valid <- complete.cases(errs_r) & complete.cases(errs_f) & complete.cases(y_act)
     if (any(valid)) {
       vr <- errs_r[valid, , drop = FALSE]
       vf <- errs_f[valid, , drop = FALSE]
+      dp <- dpred[valid, , drop = FALSE]
       ya <- y_act[valid, , drop = FALSE]
-      
+
       rmse_r <- sqrt(mean(vr^2))
       rmse_f <- sqrt(mean(vf^2))
       sse_r <- sum(vr^2); sse_f <- sum(vf^2)
       ya_center <- ya - matrix(colMeans(ya), nrow(ya), ncol(ya), byrow = TRUE)
       sst_oos <- sum(ya_center^2)
-      
+
       R2_oos_r <- 1 - sse_r / sst_oos
       R2_oos_f <- 1 - sse_f / sst_oos
-      
+
+      # Clark-West test of the nested OOS improvement (per-time loss summed over
+      # equations); gives an inferential statement, not just a RMSE delta.
+      cw <- hac_mean_test(rowSums(vr^2) - rowSums(vf^2) + rowSums(dp^2))
+
       OOS <- list(
         rmse_y  = rmse_r,
         rmse_yx = rmse_f,
         delta_rmse_pct = 100 * (rmse_r - rmse_f) / rmse_r,
         r2_oos_y  = R2_oos_r,
         r2_oos_yx = R2_oos_f,
-        delta_r2_oos = R2_oos_f - R2_oos_r
+        delta_r2_oos = R2_oos_f - R2_oos_r,
+        cw_stat = cw$stat,
+        cw_p = cw$p
       )
     }
   }
@@ -746,12 +891,10 @@ deltaR2_ou <- function(results_robust, lag = 1, oos = TRUE, seed = 123,
 #' (2) their estimated half-lives, providing visual assessment of convergence speed.
 #'
 #' @param results_robust List. Results from main analysis pipeline.
-#' @param use_contemporaneous_X Logical. Use contemporaneous X (time t) or lagged
-#'   X (time t-1) for computing equilibrium path? Default is FALSE (lagged).
-#' @param main_left Character string. Title for left panel. Default is
-#'   "Error Correction Terms u_t".
-#' @param main_right Character string. Title for right panel. Default is
-#'   "Half-Lives of Error Correction".
+#' @param use_contemporaneous_X Logical. Use contemporaneous X (time t, the
+#'   default) or lagged X (time t-1) for computing the equilibrium path.
+#' @param main_left Expression/character. Title for the left panel.
+#' @param main_right Character string. Title for the right panel.
 #'
 #' @return Invisibly returns a list with components:
 #'   \describe{
@@ -840,17 +983,20 @@ plot_error_correction_panel <- function(results_robust,
   invisible(list(U = U, half_lives = hl_u))
 }
 
-#' Extract X innovations from VAR model
+#' Extract X innovations (reduced-form VAR residuals)
 #'
-#' Computes structural shocks (innovations) for X factors by fitting a VAR model
-#' and extracting residuals.
+#' Computes \emph{reduced-form} innovations for the X factors by fitting a VAR and
+#' returning its residuals. These are not structural shocks: identifying
+#' structural shocks would require an identification scheme (e.g. a Cholesky or
+#' sign restriction); the residuals here are correlated across equations.
 #'
 #' @param results List. Output from main analysis.
 #' @param p Integer. VAR lag order. If \code{NULL}, uses order from DFM estimation.
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{shocks}}{Matrix (T x Kx) of structural shocks with NA padding for initial lags.}
+#'     \item{\code{shocks}}{Matrix (T x Kx) of reduced-form innovations with NA
+#'       padding for the initial lags.}
 #'     \item{\code{var_fit}}{Fitted VAR model object.}
 #'     \item{\code{lag_used}}{Integer lag order used.}
 #'   }

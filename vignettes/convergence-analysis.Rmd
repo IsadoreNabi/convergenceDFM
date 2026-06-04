@@ -18,43 +18,113 @@ library(convergenceDFM)
 
 ## Introduction
 
-The `convergenceDFM` package provides a comprehensive framework for analyzing
-economic convergence using Dynamic Factor Models (DFM) and Factor 
-Ornstein-Uhlenbeck processes.
+`convergenceDFM` analyzes economic convergence between two panels of series
+(for example, labour-value price indices `X` and market price indices `Y`)
+combining Dynamic Factor Models (DFM) with discrete-time, mean-reverting
+Ornstein-Uhlenbeck / AR(1) factor processes, plus formal convergence and
+coupling tests.
 
-## Basic Usage
+## Basic usage
+
+The end-to-end entry point is `run_complete_factor_analysis_robust()`. The
+example below uses simulated data and skips the Bayesian OU step (which needs a
+Stan backend); set `skip_ou = FALSE` to run it.
+
 ```{r example, eval=FALSE}
-# Load example data
-data("example_marxist_data")
+set.seed(123)
+X <- matrix(rnorm(120 * 8), 120, 8)               # labour-value price indices
+Y <- X + matrix(rnorm(120 * 8, 0, 0.5), 120, 8)   # market price indices
 
-# Run complete analysis
-results <- run_complete_factor_analysis_robust(
-  X_matrix = marxist_prices[, -1],
-  Y_matrix = bayesian_cpi[, -1],
-  max_comp = 3,
-  dfm_lags = 1,
-  ou_chains = 4,
-  ou_iter = 2000
+res <- run_complete_factor_analysis_robust(
+  X_matrix = X, Y_matrix = Y,
+  max_comp = 3, dfm_lags = 1,
+  skip_ou  = TRUE,
+  make_plots = FALSE,
+  verbose  = FALSE
 )
 
-# View results
-summary(results)
+res$dfm$r2_global        # in-sample fit of the factor VAR
+res$dfm$half_life_dominant
 ```
 
-## Convergence Tests
+## Coupling significance (corrected null)
 
-The package includes several convergence tests:
+To assess whether the X factors lead the Y factors beyond chance, use the
+time-shift null. **Do not** rely on a rotation null: the coupling statistics are
+invariant to orthogonal rotation, so a rotation null cannot reject (see the
+methodological notes).
 
-1. **Formal convergence tests**: Unit root tests, cointegration
-2. **Robustness tests**: Permutation, reweighting, jackknife
-3. **Rotation null tests**: Testing coupling between factor spaces
-
-## Visualization
-```{r viz, eval=FALSE}
-# Visualize factor dynamics
-visualize_factor_dynamics(
-  dfm_result = results$dfm,
-  ou_result = results$factor_ou,
-  factors_data = results$factors
-)
+```{r coupling, eval=FALSE}
+null <- run_rotation_null_on_results(res, B = 500, seed = 1,
+                                     null_method = "circular_shift")
+null$p_values        # Monte Carlo one-sided p-values
+null$p_values_fdr    # Benjamini-Hochberg adjusted
 ```
+
+The out-of-sample channel (does lagged X improve the forecast of Y?) is tested
+with a Clark-West statistic:
+
+```{r oos, eval=FALSE}
+dr <- deltaR2_ou(res, lag = 1, oos = TRUE, seed = 1, verbose = FALSE)
+dr$OOS$delta_r2_oos
+dr$OOS$cw_p          # Clark-West p-value
+```
+
+## Convergence test
+
+With a Stan backend, `estimate_factor_OU()` returns MCMC diagnostics and a
+genuine mean-reversion test: a factor is convergent only if the entire credible
+interval of its persistence `phi` lies inside `(-1, 1)`. Because `phi` is *not*
+constrained to `(0, 1)`, the test can fail to find convergence -- it is not
+true by construction.
+
+## Methodological notes and design decisions
+
+This section documents choices that are easy to misread.
+
+**1. The OU model is discrete-time AR(1).** The estimated object is a first-order
+vector autoregression with cross-equation coupling, the discrete-time analogue
+of a coupled Ornstein-Uhlenbeck system. For a series sampled at interval
+\eqn{\Delta t}, persistence maps to the continuous mean-reversion speed by
+\eqn{\phi = e^{-\kappa \Delta t}}, i.e. \eqn{\kappa = -\log(\phi)/\Delta t}, and
+the half-life is \eqn{\log(2)/\kappa = \log(0.5)/\log(\phi)} periods. `phi` is
+given a generous support `(-1.5, 1.5)` and a weakly-informative,
+convergence-neutral prior `normal(0.5, 0.5)` so the posterior can place mass on
+unit-root or explosive dynamics; convergence is then a testable conclusion.
+
+**2. Factors are PLS scores, not principal components.** Factor extraction is
+supervised (Partial Least Squares uses `Y`), which makes the in-sample fit of
+"`Y` from `X` factors" optimistic. Always read the out-of-sample diagnostics
+(`r2_oos_*`, the Clark-West test) rather than the in-sample `R^2`. This differs
+from the principal-component DFM of Stock-Watson; the references describe the
+spirit of the approach, not an identical estimator.
+
+**3. The coupling null breaks time, not basis.** Procrustes, canonical
+correlations, principal angles and the dynamic-beta norm are invariant to
+orthogonal rotation of either factor space. A rotation-based null is therefore
+degenerate. The valid null circularly shifts `Y` in time (or block-bootstraps
+it), preserving each series' own autocorrelation while destroying the
+cross-series alignment.
+
+**4. Residual unit-root tests use generated regressors.** The equilibrium errors
+fed to ADF/PP are built from *estimated* OU parameters. Standard Dickey-Fuller
+critical values over-reject on such residuals; corroborate any rejection with
+`test_cointegration_control()` (Johansen). The package flags this with a
+warning and a `caveat` field.
+
+**5. The CPI "disaggregation" is a convex weight blend.** It mixes a base weight
+matrix with a time-distributed, SVD-derived data weight via
+\eqn{\lambda P + (1-\lambda) LT}. There is no likelihood and no Bayes' rule; the
+historical "Bayesian"/"posterior" naming is kept only for backward
+compatibility.
+
+**6. The global index is a heuristic summary.** The 0-1 convergence/robustness
+indices aggregate transformed sub-scores with fixed thresholds. Treat the
+verdict as a summary, not a calibrated probability; base inference on the
+individual tests and their FDR-adjusted p-values.
+
+## Reproducibility
+
+Every stochastic routine accepts and honours a `seed`. The pipeline takes a
+single master `seed` and threads it through data jitter, component selection,
+OU sampling and the robustness tests.

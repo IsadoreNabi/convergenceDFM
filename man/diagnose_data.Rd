@@ -4,20 +4,39 @@
 \alias{diagnose_data}
 \title{Diagnose and prepare data matrices}
 \usage{
-diagnose_data(X_matrix, Y_matrix, verbose = TRUE)
+diagnose_data(
+  X_matrix,
+  Y_matrix,
+  verbose = TRUE,
+  seed = NULL,
+  max_impute_frac = 0.2
+)
 }
 \arguments{
-\item{X_matrix}{Numeric matrix or data frame of X variables (e.g., Marxist prices).}
+\item{X_matrix}{Numeric matrix or data frame of X variables (e.g., labour-value
+price indices).}
 
-\item{Y_matrix}{Numeric matrix or data frame of Y variables (e.g., market prices/CPI).}
+\item{Y_matrix}{Numeric matrix or data frame of Y variables (e.g., market
+prices / CPI).}
 
 \item{verbose}{Logical; print diagnostic information. Default \code{TRUE}.}
+
+\item{seed}{Optional integer. If supplied, the random number generator state is
+set (and restored on exit) before injecting the jitter used to break exactly
+zero-variance columns, making the operation reproducible. Default
+\code{NULL} (no seeding).}
+
+\item{max_impute_frac}{Numeric in (0, 1). If the fraction of imputed entries
+in either matrix exceeds this value a warning is emitted (heavy imputation
+can distort downstream covariance structure). Default \code{0.2}.}
 }
 \value{
 List with components:
 \describe{
 \item{\code{X_matrix}}{Cleaned and prepared X matrix.}
 \item{\code{Y_matrix}}{Cleaned and prepared Y matrix.}
+\item{\code{impute_frac}}{Named numeric vector with the fraction of
+imputed entries in X and Y.}
 }
 }
 \description{
@@ -31,7 +50,10 @@ The function:
 \item Converts to matrix format if needed
 \item Validates dimensional compatibility
 \item Imputes missing values via interpolation (using zoo if available)
-\item Adds minimal noise to zero-variance columns
-\item Reports diagnostic information
+\item Adds minimal, optionally seeded, noise to zero-variance columns
+\item Reports diagnostic information and the imputation fraction
 }
+Imputation by interpolation with boundary carry-forward (and a mean
+fallback) is a convenience for exploratory work; for inference on series with
+substantial missingness, prefer an explicit, model-based imputation upstream.
 }

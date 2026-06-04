@@ -2,7 +2,7 @@
 % Please edit documentation in R/rotation_tests.R
 \name{make_X_innovations}
 \alias{make_X_innovations}
-\title{Extract X innovations from VAR model}
+\title{Extract X innovations (reduced-form VAR residuals)}
 \usage{
 make_X_innovations(results, p = NULL)
 }
@@ -14,12 +14,15 @@ make_X_innovations(results, p = NULL)
 \value{
 List with components:
 \describe{
-\item{\code{shocks}}{Matrix (T x Kx) of structural shocks with NA padding for initial lags.}
+\item{\code{shocks}}{Matrix (T x Kx) of reduced-form innovations with NA
+padding for the initial lags.}
 \item{\code{var_fit}}{Fitted VAR model object.}
 \item{\code{lag_used}}{Integer lag order used.}
 }
 }
 \description{
-Computes structural shocks (innovations) for X factors by fitting a VAR model
-and extracting residuals.
+Computes \emph{reduced-form} innovations for the X factors by fitting a VAR and
+returning its residuals. These are not structural shocks: identifying
+structural shocks would require an identification scheme (e.g. a Cholesky or
+sign restriction); the residuals here are correlated across equations.
 }

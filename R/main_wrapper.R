@@ -1,25 +1,49 @@
 #' Prepare Marxist factors with auxiliary variables
 #'
-#' Prepares factor data by combining price indices with auxiliary economic variables
-#' such as total Marxist gross output, commodity composition, and surplus value rates.
+#' Prepares factor data by scaling the price matrices and, when supplied,
+#' augmenting the X (predictor) block with auxiliary economic series so they
+#' participate in factor extraction: total Marxist gross output (\code{TMG}),
+#' commodity composition (\code{COM_matrix}), surplus value rate
+#' (\code{SPVR_matrix}) and any extra covariates (\code{CA}). Auxiliaries are
+#' aligned to the common number of rows and column-bound to scaled X. Previously
+#' these arguments were accepted but silently ignored.
 #'
-#' @param X_matrix Numeric matrix of Marxist price indices.
+#' @param X_matrix Numeric matrix of Marxist (labour-value) price indices.
 #' @param Y_matrix Numeric matrix of market prices.
-#' @param TMG Numeric vector. Optional total Marxist gross output time series.
+#' @param TMG Numeric vector/matrix. Optional total Marxist gross output series.
 #' @param COM_matrix Numeric matrix. Optional commodity composition over time.
 #' @param SPVR_matrix Numeric matrix. Optional surplus value rate over time.
+#' @param CA Numeric vector/matrix. Optional additional covariates.
 #'
-#' @return List with prepared factor data and metadata.
+#' @return List with \code{X_scaled} (possibly augmented), \code{Y_scaled}, and
+#'   \code{aux_used} (names of the auxiliary blocks actually incorporated).
 #'
 #' @keywords internal
 #' @noRd
 
 prepare_marxist_factors <- function(X_matrix, Y_matrix, TMG = NULL,
                                     COM_matrix = NULL, SPVR_matrix = NULL, CA = NULL) {
-  list(
-    X_scaled = scale(X_matrix),
-    Y_scaled = scale(Y_matrix)
-  )
+  Xs <- scale(as.matrix(X_matrix))
+  Ys <- scale(as.matrix(Y_matrix))
+  n  <- nrow(Xs)
+
+  aux_used <- character(0)
+  aux_blocks <- list(TMG = TMG, COM = COM_matrix, SPVR = SPVR_matrix, CA = CA)
+  for (nm in names(aux_blocks)) {
+    blk <- aux_blocks[[nm]]
+    if (is.null(blk)) next
+    blk <- as.matrix(blk)
+    if (nrow(blk) < n) next                       # incompatible length: skip
+    blk <- scale(blk[seq_len(n), , drop = FALSE])
+    keep <- apply(blk, 2, function(col) all(is.finite(col)) && stats::var(col) > 1e-12)
+    blk <- blk[, keep, drop = FALSE]
+    if (ncol(blk) == 0) next
+    if (is.null(colnames(blk))) colnames(blk) <- paste0(nm, seq_len(ncol(blk)))
+    Xs <- cbind(Xs, blk)
+    aux_used <- c(aux_used, nm)
+  }
+
+  list(X_scaled = Xs, Y_scaled = Ys, aux_used = aux_used)
 }
 
 interpret_factors <- function(pls_model, data_prep, optimal_ncomp, sector_names = NULL) {
@@ -104,23 +128,19 @@ calculate_continuous_indices <- function(test_results) {
   convergence_scores <- list()
   robustness_scores <- list()
   
-  if (!is.null(test_results$posteriors) && !is.null(test_results$posteriors$kappa_x)) {
-    kappa_x <- test_results$posteriors$kappa_x
-    kappa_y <- test_results$posteriors$kappa_y
-    
-    if (is.matrix(kappa_x) && nrow(kappa_x) >= 3) {
-      in_range_x <- mean(kappa_x[2,] > 0.01 & kappa_x[3,] < 0.99)
-    } else {
-      in_range_x <- 0
+  if (!is.null(test_results$posteriors) && !is.null(test_results$posteriors$phi_x)) {
+    # Fraction of factors whose ENTIRE phi credible interval lies in the
+    # stationary band (-1, 1). This is a genuine test: under the corrected OU
+    # parameterization phi can exceed 1, so this fraction is data-dependent
+    # rather than 1 by construction.
+    phi_x <- test_results$posteriors$phi_x   # rows: median, lower, upper
+    phi_y <- test_results$posteriors$phi_y
+
+    band_frac <- function(P) {
+      if (!is.matrix(P) || nrow(P) < 3 || ncol(P) < 1) return(0)
+      mean(P[3, ] < 1 & P[2, ] > -1)
     }
-    
-    if (is.matrix(kappa_y) && nrow(kappa_y) >= 3) {
-      in_range_y <- mean(kappa_y[2,] > 0.01 & kappa_y[3,] < 0.99)
-    } else {
-      in_range_y <- 0
-    }
-    
-    convergence_scores$posteriors <- (in_range_x + in_range_y) / 2
+    convergence_scores$posteriors <- (band_frac(phi_x) + band_frac(phi_y)) / 2
   }
   
   if (!is.null(test_results$unit_root)) {
@@ -258,20 +278,29 @@ interpret_scores <- function(conv_idx, rob_idx) {
 #'
 #' @param scores_list List of test result scores.
 #' @param n_schemes Integer. Number of alternative schemes. Default is 5.
+#' @param seed Optional integer; seeds the random weighting schemes for
+#'   reproducibility. The RNG state is restored on exit. Default \code{123}.
 #'
 #' @return List with sensitivity metrics across schemes.
 #'
 #' @keywords internal
 #' @noRd
 
-sensitivity_analysis_weights <- function(scores_list, n_schemes = 5) {
-  
+sensitivity_analysis_weights <- function(scores_list, n_schemes = 5, seed = 123) {
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+
   uniform <- rep(1/length(scores_list), length(scores_list))
-  
+
   var_est <- runif(length(scores_list), 0.1, 0.5)
   reliability <- 1 / var_est
   reliability <- reliability / sum(reliability)
-  
+
   decreasing <- rev(seq_len(length(scores_list)))
   decreasing <- decreasing / sum(decreasing)
   
@@ -482,19 +511,23 @@ run_convergence_robustness_tests <- function(results_robust, X_matrix, Y_matrix,
     }
     
     message("\n========================================")
-    message(sprintf("GLOBAL INDEX: %.3f", indices$global_index))
-    message("\nVEREDICT: ", indices$interpretation$verdict)
-    message("Nivel de confianza: ", indices$interpretation$confidence)
+    message(sprintf("GLOBAL INDEX (heuristic): %.3f", indices$global_index))
+    message("\nVERDICT: ", indices$interpretation$verdict)
+    message("Confidence level: ", indices$interpretation$confidence)
     message("\n", indices$interpretation$recommendation)
+    message("\nNote: the global index aggregates heuristic sub-scores with fixed ",
+            "thresholds; treat it as a summary, not a calibrated p-value. Base ",
+            "inference on the individual tests (Johansen, Clark-West, time-shift ",
+            "null) and their FDR-adjusted p-values.")
   }
-  
+
   test_results$indices <- indices
   test_results$summary <- list(
     convergence_index = indices$convergence$index,
     robustness_index = indices$robustness$index,
     global_index = indices$global_index,
     interpretation = indices$interpretation,
-    sensitivity = if (exists("indices$sensitivity")) indices$sensitivity else NULL
+    sensitivity = if (!is.null(indices$sensitivity)) indices$sensitivity else NULL
   )
   
   test_results
@@ -503,85 +536,64 @@ run_convergence_robustness_tests <- function(results_robust, X_matrix, Y_matrix,
 #' Complete factor-OU convergence analysis pipeline
 #'
 #' Executes the end-to-end analysis workflow: data preparation, PLS-based factor
-#' extraction, DFM estimation, Factor-OU estimation, convergence tests, and
+#' extraction, DFM estimation, Factor-OU/AR(1) estimation, convergence tests, and
 #' robustness checks. This is the main user-facing function.
-#'
-#'   uses column names of \code{X_matrix}.
-#'   and reweighting tests). Can be \code{NULL}.
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{factors}}{List containing PLS-extracted factors (scores_X, scores_Y)
-#'       and related objects (pls_X, pls_Y, ncomp_X, ncomp_Y).}
-#'     \item{\code{dfm}}{List with DFM estimation results including VAR fit, lag order,
-#'       diagnostics, and optional impulse responses.}
-#'     \item{\code{factor_ou}}{List with Factor-OU model estimates: beta, lambda,
-#'       sigma, half_life, method used, and optional Stan fit object.}
-#'     \item{\code{convergence_tests}}{List with formal convergence test results
+#'     \item{\code{data_prep}}{Scaled (possibly auxiliary-augmented) X and Y.}
+#'     \item{\code{selection}}{PLS component selection (see
+#'       \code{\link{select_optimal_components_safe}}).}
+#'     \item{\code{factors}}{PLS-extracted factors (\code{scores_X},
+#'       \code{scores_Y}) and interpretation.}
+#'     \item{\code{dfm}}{DFM/VAR estimation (see \code{\link{estimate_DFM}}).}
+#'     \item{\code{factor_ou}}{Factor-OU/AR(1) estimates (see
+#'       \code{\link{estimate_factor_OU}}), including MCMC diagnostics.}
+#'     \item{\code{convergence_tests}}{Convergence and robustness test results
 #'       (if \code{run_convergence_tests = TRUE}).}
-#'     \item{\code{robustness_tests}}{List with robustness test results (if
-#'       \code{run_robustness_tests = TRUE}).}
-#'     \item{\code{diagnostics}}{List with data diagnostics (multicollinearity,
-#'       stationarity, structural breaks).}
-#'     \item{\code{bayesian_cpi}}{List with Bayesian disaggregation results (if
-#'       CPI paths provided).}
-#'     \item{\code{metadata}}{List with analysis metadata (timestamp, versions,
-#'       parameters).}
 #'   }
 #'
-#' @details This function orchestrates the complete analysis:
-#' \enumerate{
-#'   \item Data validation and diagnostics
-#'   \item Bayesian CPI disaggregation (if applicable)
-#'   \item PLS-based factor extraction with optimal component selection
-#'   \item Dynamic Factor Model estimation via VAR
-#'   \item Factor Ornstein-Uhlenbeck mean-reversion model
-#'   \item Formal convergence tests (stationarity, cointegration, speed)
-#'   \item Robustness tests (permutation, reweighting, jackknife)
-#' }
+#' @details This function orchestrates the complete analysis: data validation,
+#'   PLS factor extraction, VAR-based DFM, Bayesian factor-OU/AR(1), convergence
+#'   tests (stationary band on phi, Johansen cointegration, residual unit-root
+#'   with caveats) and robustness tests (time-shift permutation, reweighting,
+#'   delete-one-sector jackknife). Plotting is opt-in (\code{make_plots}); by
+#'   default no graphics device is opened and no file is written, so the function
+#'   is safe in batch/non-interactive use.
 #'
 #' @examples
 #' \donttest{
-#' # Basic usage with simulated data
 #' set.seed(123)
 #' X <- matrix(rnorm(100 * 10), 100, 10)
 #' Y <- X + matrix(rnorm(100 * 10, 0, 0.5), 100, 10)
 #'
 #' results <- run_complete_factor_analysis_robust(
-#'   X_matrix = X,
-#'   Y_matrix = Y,
-#'   max_comp = 3,
-#'   dfm_lags = 1,
-#'   ou_chains = 4,
-#'   ou_iter = 2000,
+#'   X_matrix = X, Y_matrix = Y,
+#'   max_comp = 3, dfm_lags = 1,
+#'   skip_ou = TRUE,        # set FALSE to run the Bayesian factor-OU model
 #'   verbose = FALSE
 #' )
-#'
-#' # View convergence summary
-#' summary(results$convergence_tests)
-#'
-#' # Visualize results
-#' visualize_factor_dynamics(
-#'   dfm_result = results$dfm,
-#'   ou_result = results$factor_ou,
-#'   factors_data = results$factors
-#' )
+#' str(results$dfm$r2_global)
 #' }
-#'
 #'
 #' @param X_matrix Matrix of first set of variables
 #' @param Y_matrix Matrix of second set of variables
-#' @param TMG Optional TMG matrix (default: NULL)
-#' @param COM_matrix Optional COM matrix (default: NULL)
-#' @param SPVR_matrix Optional SPVR matrix (default: NULL)
-#' @param CA Optional CA parameter (default: NULL)
+#' @param TMG Optional total Marxist gross output (default: NULL)
+#' @param COM_matrix Optional commodity-composition matrix (default: NULL)
+#' @param SPVR_matrix Optional surplus-value-rate matrix (default: NULL)
+#' @param CA Optional additional covariates (default: NULL)
 #' @param sector_names Vector of sector names (default: NULL)
 #' @param max_comp Maximum number of components (default: 3)
 #' @param dfm_lags Number of lags for DFM (default: 1)
-#' @param ou_chains Number of MCMC chains for OU estimation (default: 10)
-#' @param ou_iter Number of MCMC iterations (default: 10000)
+#' @param ou_chains Number of MCMC chains for OU estimation (default: 4)
+#' @param ou_iter Number of MCMC iterations (default: 2000)
 #' @param skip_ou Logical, skip OU estimation (default: FALSE)
 #' @param run_convergence_tests Logical, run convergence tests (default: TRUE)
+#' @param make_plots Logical, draw the factor-dynamics figure (default: FALSE).
+#'   When \code{TRUE} and \code{plot_file} is set, the figure is written to that
+#'   PDF; otherwise it is drawn on the current device.
+#' @param plot_file Optional path for the saved figure (default: NULL).
+#' @param seed Integer master seed for the stochastic steps (default: 123).
 #' @param path_cpi Path to CPI data (default: NULL)
 #' @param path_weights Path to weights data (default: NULL)
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
@@ -595,22 +607,24 @@ run_complete_factor_analysis_robust <- function(X_matrix, Y_matrix,
                                                 sector_names = NULL,
                                                 max_comp = 3,
                                                 dfm_lags = 1,
-                                                ou_chains = 10, ou_iter = 10000,
+                                                ou_chains = 4, ou_iter = 2000,
                                                 skip_ou = FALSE,
                                                 run_convergence_tests = TRUE,
+                                                make_plots = FALSE, plot_file = NULL,
+                                                seed = 123,
                                                 path_cpi = NULL, path_weights = NULL,
                                                 verbose = TRUE) {
-  
+
   if (verbose) {
     message("========================================")
     message("COMPLETE ROBUST FACTOR ANALYSIS")
     message("========================================\n")
   }
-  
+
   results <- list()
-  
+
   data_clean <- tryCatch(
-    diagnose_data(X_matrix, Y_matrix, verbose = verbose),
+    diagnose_data(X_matrix, Y_matrix, verbose = verbose, seed = seed),
     error = function(e) {
       if (verbose) message("\nFAIL: Diagnostic error:\n", e$message)
       return(NULL)
@@ -692,7 +706,8 @@ run_complete_factor_analysis_robust <- function(X_matrix, Y_matrix,
     if (verbose) message("\nREPORT: PHASE 5 (Ornstein-Uhlenbeck Factor Model)...")
     ou_result <- tryCatch(
       estimate_factor_OU(factors_data, data_prep,
-                         chains = ou_chains, iter = ou_iter, verbose = verbose),
+                         chains = ou_chains, iter = ou_iter, seed = seed,
+                         verbose = verbose),
       error = function(e) {
         if (verbose) message("\nFAIL: OU error: ", e$message)
         NULL
@@ -707,28 +722,28 @@ run_complete_factor_analysis_robust <- function(X_matrix, Y_matrix,
     results$factor_ou <- ou_result
   }
   
-  if (!is.null(results$dfm) && !is.null(results$factor_ou)) {
+  if (make_plots && !is.null(results$dfm) && !is.null(results$factor_ou)) {
     if (verbose) message("\nREPORT: PHASE 6 (Visualization)...")
-    
+
     viz_success <- tryCatch({
       visualize_factor_dynamics(
         dfm_result = results$dfm,
         ou_result = results$factor_ou,
         factors_data = results$factors,
-        save_plot = TRUE,
+        save_plot = !is.null(plot_file),
+        plot_file = plot_file,
         use_device = "default",
         verbose = verbose
       )
     }, error = function(e) {
       if (verbose) {
-        message("  WARNING: Error in complex visualization: ", e$message)
+        message("  WARNING: Error in full visualization: ", e$message)
         message("  Trying simple version...")
       }
-      
       tryCatch({
         visualize_factor_dynamics_simple(
           factors_data = results$factors,
-          output_file = NULL,
+          output_file = plot_file,
           verbose = verbose
         )
       }, error = function(e2) {
@@ -736,8 +751,8 @@ run_complete_factor_analysis_robust <- function(X_matrix, Y_matrix,
         FALSE
       })
     })
-    
-    if (viz_success && verbose) {
+
+    if (isTRUE(viz_success) && verbose) {
       message("  OK: Visualization completed successfully")
     }
   }

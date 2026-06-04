@@ -14,14 +14,12 @@ plot_error_correction_panel(
 \arguments{
 \item{results_robust}{List. Results from main analysis pipeline.}
 
-\item{use_contemporaneous_X}{Logical. Use contemporaneous X (time t) or lagged
-X (time t-1) for computing equilibrium path? Default is FALSE (lagged).}
+\item{use_contemporaneous_X}{Logical. Use contemporaneous X (time t, the
+default) or lagged X (time t-1) for computing the equilibrium path.}
 
-\item{main_left}{Character string. Title for left panel. Default is
-"Error Correction Terms u_t".}
+\item{main_left}{Expression/character. Title for the left panel.}
 
-\item{main_right}{Character string. Title for right panel. Default is
-"Half-Lives of Error Correction".}
+\item{main_right}{Character string. Title for the right panel.}
 }
 \value{
 Invisibly returns a list with components:

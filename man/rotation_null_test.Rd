@@ -2,7 +2,7 @@
 % Please edit documentation in R/rotation_tests.R
 \name{rotation_null_test}
 \alias{rotation_null_test}
-\title{Rotation null hypothesis test for factor coupling}
+\title{Null hypothesis test for X->Y factor coupling}
 \usage{
 rotation_null_test(
   scores_X,
@@ -11,41 +11,58 @@ rotation_null_test(
   B = 1000,
   seed = 123,
   compute = c("procrustes", "cca", "principal", "dynbeta"),
-  progress = TRUE,
-  rotate = "Y"
+  null_method = c("circular_shift", "rotation"),
+  progress = TRUE
 )
 }
 \arguments{
-\item{scores_X}{Factor scores from first dataset}
+\item{scores_X}{Factor scores from the first dataset (T x Kx).}
 
-\item{scores_Y}{Factor scores from second dataset}
+\item{scores_Y}{Factor scores from the second dataset (T x Ky).}
 
-\item{lag}{Number of lags for the model (default: 1)}
+\item{lag}{Number of lags for the X->Y relationship (default 1).}
 
-\item{B}{Number of bootstrap iterations (default: 1000)}
+\item{B}{Number of null replicates (default 1000).}
 
-\item{seed}{Random seed for reproducibility (default: 123)}
+\item{seed}{Random seed for reproducibility (default 123). The RNG state is
+restored on exit.}
 
-\item{compute}{Vector of methods to compute: 'procrustes', 'cca', 'principal', 'dynbeta'}
+\item{compute}{Statistics to compute: any of 'procrustes', 'cca', 'principal',
+'dynbeta'.}
 
-\item{progress}{Logical, show progress bar (default: TRUE)}
+\item{null_method}{Null-generating mechanism: "circular_shift" (default) or
+"rotation" (invariance diagnostic only).}
 
-\item{rotate}{Which dataset to rotate: 'X' or 'Y' (default: 'Y')}
+\item{progress}{Logical, show progress bar (default TRUE).}
 }
 \value{
 List with components:
 \describe{
-\item{\code{observed}}{Observed correlation statistics.}
-\item{\code{null_distribution}}{Matrix of statistics under null rotations.}
-\item{\code{p_values}}{One-sided p-values for each statistic.}
-\item{\code{significant}}{Logical indicating significance at alpha = 0.05.}
+\item{\code{observed}}{Observed statistics.}
+\item{\code{null_stats}}{List of length-\code{B} null vectors per statistic.}
+\item{\code{p_values}}{Monte Carlo one-sided p-values \code{(1 + #{null >=
+      obs}) / (B + 1)}.}
+\item{\code{p_values_fdr}}{Benjamini-Hochberg FDR-adjusted p-values.}
+\item{\code{params}}{Test settings, including the seed and null method.}
 }
 }
 \description{
-Tests whether the observed correlation structure between X and Y factor spaces
-is significantly stronger than would be expected under random orthogonal rotations.
+Tests whether the observed association between the lagged X factor space and
+the Y factor space is stronger than expected when the X->Y temporal alignment
+is broken.
 }
-\details{
-(contemporaneous).
-"spearman", or "kendall".
+\section{Why not a rotation null}{
+
+The coupling statistics used here (Procrustes nuclear-norm ratio, canonical
+correlations, principal angles, dynamic-beta Frobenius norm) are
+\emph{invariant} to orthogonal rotation of either factor space: rotating Y by
+an orthogonal matrix leaves all of them unchanged, so a rotation-based null is
+degenerate (its "distribution" is a point mass at the observed value and every
+p-value is ~1). The default null (\code{null_method = "circular_shift"})
+instead applies a random circular time shift to Y, which preserves each
+series' own autocorrelation while destroying the cross-series alignment -- the
+statistics then genuinely vary under the null. \code{null_method = "rotation"}
+is retained only as an invariance diagnostic and will (correctly) yield
+non-significant results.
 }
+

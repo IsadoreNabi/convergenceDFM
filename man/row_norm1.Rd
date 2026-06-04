@@ -18,10 +18,8 @@ Scales each row of a matrix so that its elements sum to 1. Handles zero-sum
 rows by leaving them unchanged (avoiding division by zero).
 }
 \examples{
-\donttest{
 M <- matrix(c(1, 2, 3, 4, 5, 6), nrow = 2)
 M_norm <- row_norm1(M)
 rowSums(M_norm)  # Should be c(1, 1)
-}
 
 }

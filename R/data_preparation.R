@@ -4,14 +4,25 @@
 #' input matrices to prepare them for factor analysis. Handles dimension
 #' compatibility, NA values, and zero-variance columns.
 #'
-#' @param X_matrix Numeric matrix or data frame of X variables (e.g., Marxist prices).
-#' @param Y_matrix Numeric matrix or data frame of Y variables (e.g., market prices/CPI).
+#' @param X_matrix Numeric matrix or data frame of X variables (e.g., labour-value
+#'   price indices).
+#' @param Y_matrix Numeric matrix or data frame of Y variables (e.g., market
+#'   prices / CPI).
 #' @param verbose Logical; print diagnostic information. Default \code{TRUE}.
+#' @param seed Optional integer. If supplied, the random number generator state is
+#'   set (and restored on exit) before injecting the jitter used to break exactly
+#'   zero-variance columns, making the operation reproducible. Default
+#'   \code{NULL} (no seeding).
+#' @param max_impute_frac Numeric in (0, 1). If the fraction of imputed entries
+#'   in either matrix exceeds this value a warning is emitted (heavy imputation
+#'   can distort downstream covariance structure). Default \code{0.2}.
 #'
 #' @return List with components:
 #'   \describe{
 #'     \item{\code{X_matrix}}{Cleaned and prepared X matrix.}
 #'     \item{\code{Y_matrix}}{Cleaned and prepared Y matrix.}
+#'     \item{\code{impute_frac}}{Named numeric vector with the fraction of
+#'       imputed entries in X and Y.}
 #'   }
 #'
 #' @details The function:
@@ -19,13 +30,24 @@
 #'     \item Converts to matrix format if needed
 #'     \item Validates dimensional compatibility
 #'     \item Imputes missing values via interpolation (using zoo if available)
-#'     \item Adds minimal noise to zero-variance columns
-#'     \item Reports diagnostic information
+#'     \item Adds minimal, optionally seeded, noise to zero-variance columns
+#'     \item Reports diagnostic information and the imputation fraction
 #'   }
+#'   Imputation by interpolation with boundary carry-forward (and a mean
+#'   fallback) is a convenience for exploratory work; for inference on series with
+#'   substantial missingness, prefer an explicit, model-based imputation upstream.
 #'
 #' @export
 
-diagnose_data <- function(X_matrix, Y_matrix, verbose = TRUE) {
+diagnose_data <- function(X_matrix, Y_matrix, verbose = TRUE,
+                          seed = NULL, max_impute_frac = 0.2) {
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
   if (verbose) {
     message("========================================")
     message("DATA DIAGNOSIS")
@@ -75,11 +97,21 @@ diagnose_data <- function(X_matrix, Y_matrix, verbose = TRUE) {
   
   na_x <- sum(!is.finite(X_matrix))
   na_y <- sum(!is.finite(Y_matrix))
-  
+  frac_x <- if (length(X_matrix)) na_x / length(X_matrix) else 0
+  frac_y <- if (length(Y_matrix)) na_y / length(Y_matrix) else 0
+
   if (verbose) {
     message("\nMISSING/INFINITE VALUES:")
-    message("  - In X_matrix: ", na_x, " (", round(100*na_x/length(X_matrix), 2), "%)")
-    message("  - In Y_matrix: ", na_y, " (", round(100*na_y/length(Y_matrix), 2), "%)")
+    message("  - In X_matrix: ", na_x, " (", round(100 * frac_x, 2), "%)")
+    message("  - In Y_matrix: ", na_y, " (", round(100 * frac_y, 2), "%)")
+  }
+
+  if (frac_x > max_impute_frac || frac_y > max_impute_frac) {
+    warning(sprintf(
+      paste0("Heavy imputation: %.1f%% of X and %.1f%% of Y entries are ",
+             "missing/infinite (threshold %.0f%%). Interpolation-based ",
+             "imputation may distort the covariance structure used downstream."),
+      100 * frac_x, 100 * frac_y, 100 * max_impute_frac), call. = FALSE)
   }
   
   if (na_x > 0) {
@@ -125,6 +157,7 @@ diagnose_data <- function(X_matrix, Y_matrix, verbose = TRUE) {
   }
   
   if (verbose) message("\nOK: Data ready for analysis\n")
-  
-  list(X_matrix = X_matrix, Y_matrix = Y_matrix)
+
+  list(X_matrix = X_matrix, Y_matrix = Y_matrix,
+       impute_frac = c(X = frac_x, Y = frac_y))
 }

@@ -4,36 +4,60 @@
 \alias{select_optimal_components_safe}
 \title{Select optimal number of PLS components with cross-validation}
 \usage{
-select_optimal_components_safe(X, Y, max_comp = 15, verbose = TRUE)
+select_optimal_components_safe(
+  X,
+  Y,
+  max_comp = 15,
+  validation = c("CV", "LOO"),
+  segments = NULL,
+  seed = NULL,
+  verbose = TRUE
+)
 }
 \arguments{
-\item{X}{First data matrix}
+\item{X}{First data matrix (predictors), T x p.}
 
-\item{Y}{Second data matrix}
+\item{Y}{Second data matrix (responses), T x q (or a vector).}
 
-\item{max_comp}{Maximum number of components to test (default: 15)}
+\item{max_comp}{Maximum number of components to test. Default 15. It is
+internally capped at \code{min(nrow(X) - 1, ncol(X))}.}
 
-\item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
+\item{validation}{Character; cross-validation type, one of \code{"CV"} (k-fold,
+default) or \code{"LOO"} (leave-one-out, deterministic).}
+
+\item{segments}{Integer; number of folds when \code{validation = "CV"}.
+Default \code{min(10, nrow(X))}.}
+
+\item{seed}{Optional integer. With \code{validation = "CV"} the folds are
+random; supplying a seed makes the selection reproducible. The RNG state is
+restored on exit. Default \code{NULL}.}
+
+\item{verbose}{Logical; print progress and diagnostic information. Default
+\code{TRUE}.}
 }
 \value{
-List with components:
+A list with components:
 \describe{
-\item{\code{ncomp_optimal}}{Optimal number of components selected.}
-\item{\code{RMSEP}}{Root Mean Squared Error of Prediction for each component.}
-\item{\code{R2}}{R-squared values for each component.}
-\item{\code{validation_method}}{Validation method used.}
-\item{\code{pls_fit}}{Fitted PLS model object with optimal components.}
+\item{\code{optimal_ncomp}}{Integer, number of components selected.}
+\item{\code{pls_model}}{Fitted \code{pls::plsr} model (all \code{max_comp}
+components, validated).}
+\item{\code{R2_cv}}{Cross-validated R2 at \code{optimal_ncomp}.}
+\item{\code{var_explained}}{Percent of Y variance explained (CV) at
+\code{optimal_ncomp}.}
+\item{\code{rmsep_cv}}{Numeric vector of cross-validated RMSEP for
+1..\code{max_comp} components.}
+\item{\code{validation}}{The validation method actually used.}
 }
 }
 \description{
-Determines the optimal number of Partial Least Squares components using
-leave-one-out or k-fold cross-validation, with robust error handling.
+Determines the optimal number of Partial Least Squares (PLS) components using
+k-fold or leave-one-out cross-validation, with robust error handling. The
+number of components is chosen with the one-standard-error rule (the most
+parsimonious model whose cross-validated RMSEP is within one standard error of
+the minimum), falling back to an R2 elbow and then to the RMSEP minimizer.
 }
 \details{
-default) or "CV" (k-fold cross-validation).
-validation = "LOO".
-
 The function fits PLS models with 1 to \code{max_comp} components,
 evaluates each via cross-validation, and selects the number that minimizes
-prediction error while avoiding overfitting.
+prediction error while avoiding overfitting (one-SE rule).
 }

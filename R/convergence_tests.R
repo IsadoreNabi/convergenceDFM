@@ -1,15 +1,20 @@
 #' Extract OU posteriors and credible intervals (Stan)
 #'
 #' Extracts medians and central credible intervals for \eqn{\phi_x}, \eqn{\phi_y},
-#' and \eqn{\beta} from a fitted Stan object and checks whether
-#' \eqn{\kappa = 1 - \phi} lies in (0,1).
+#' and \eqn{\beta} from a fitted Stan object and tests mean reversion. Because the
+#' model no longer constrains \eqn{\phi} to \eqn{(0,1)}, the convergence verdict
+#' is a genuine test: a factor is deemed convergent when its entire credible
+#' interval for \eqn{\phi} lies inside the stationary band \eqn{(-1, 1)} (i.e. the
+#' upper bound is below 1 and the lower bound above -1). Under the old
+#' parameterization this condition held by construction and was therefore vacuous.
 #'
 #' @param ou_result Object returned by \code{\link{estimate_factor_OU}}.
 #' @param stan_fit Optional Stan fit (uses \code{ou_result$stan_fit} if missing).
 #' @param confidence Credible level in (0,1), default 0.95.
 #' @param verbose Logical; print progress/details. Default \code{TRUE}.
-#' @return A list with \code{kappa_x}, \code{kappa_y}, \code{beta}, and a boolean
-#'   \code{convergence_evidence}.
+#' @return A list with \code{phi_x}, \code{phi_y} (median/lower/upper),
+#'   \code{kappa_x}, \code{kappa_y} (\eqn{= 1 - \phi}), \code{beta}, per-side
+#'   convergence flags, and a boolean \code{convergence_evidence}.
 #' @keywords internal
 #' @noRd
 
@@ -87,36 +92,42 @@ extract_ou_posteriors <- function(ou_result, stan_fit = NULL, confidence = 0.95,
   
   kappa_x <- 1 - phi_x_draws
   kappa_y <- 1 - phi_y_draws
-  
+
   beta_draws <- extract_quantiles("beta", stan_fit)
-  
-  if (verbose) message("OK: Posteriors extracted with CI", confidence * 100, "%\n")
-  
-  kappa_in_range_x <- FALSE
-  kappa_in_range_y <- FALSE
-  
+
+  if (verbose) message("OK: Posteriors extracted with CI ", confidence * 100, "%\n")
+
+  # Mean-reversion test: the WHOLE credible interval of phi must lie in (-1, 1).
+  # Rows of phi_*_draws are c(median, lower, upper); lower = row 2, upper = row 3.
+  phi_band_x <- FALSE
+  phi_band_y <- FALSE
+
   tryCatch({
-    if (nrow(kappa_x) >= 3 && ncol(kappa_x) >= 1) {
-      kappa_in_range_x <- all(kappa_x[2,] > 0 & kappa_x[3,] < 1)
+    if (nrow(phi_x_draws) >= 3 && ncol(phi_x_draws) >= 1) {
+      phi_band_x <- all(phi_x_draws[3, ] < 1 & phi_x_draws[2, ] > -1)
     }
-    if (nrow(kappa_y) >= 3 && ncol(kappa_y) >= 1) {
-      kappa_in_range_y <- all(kappa_y[2,] > 0 & kappa_y[3,] < 1)
+    if (nrow(phi_y_draws) >= 3 && ncol(phi_y_draws) >= 1) {
+      phi_band_y <- all(phi_y_draws[3, ] < 1 & phi_y_draws[2, ] > -1)
     }
   }, error = function(e) {
-    if (verbose) message("  Error checking ranges")
+    if (verbose) message("  Error checking stationary band")
   })
-  
-  if (kappa_in_range_x && kappa_in_range_y) {
-    if (verbose) message("OK: CI95%(k) in (0,1) -> GUARANTEED CONVERGENCE")
+
+  if (phi_band_x && phi_band_y) {
+    if (verbose) message("OK: full credible intervals of phi inside (-1, 1) -> evidence of convergence")
   } else {
-    if (verbose) message("WARNING: Some 95%CI(k) are not in (0,1)")
+    if (verbose) message("NOTE: some credible intervals of phi reach or exceed 1 -> convergence NOT established")
   }
-  
+
   list(
+    phi_x = phi_x_draws,
+    phi_y = phi_y_draws,
     kappa_x = kappa_x,
     kappa_y = kappa_y,
     beta = beta_draws,
-    convergence_evidence = kappa_in_range_x && kappa_in_range_y
+    convergence_x = phi_band_x,
+    convergence_y = phi_band_y,
+    convergence_evidence = phi_band_x && phi_band_y
   )
 }
 
@@ -170,16 +181,29 @@ compute_equilibrium_errors <- function(factors_data, ou_result,
 
 test_longrun_error <- function(factors_data, ou_result,
                                mode = c("instant", "longrun", "both"),
-                               use_lagged_X = TRUE, lags_adf = 4) {
+                               use_lagged_X = TRUE, lags_adf = 4,
+                               warn = TRUE) {
   mode <- match.arg(mode)
-  
+
   if (!requireNamespace("urca", quietly = TRUE)) {
     stop("Package 'urca' is required. Please install it with install.packages('urca')",
          call. = FALSE)
   }
-  
+
+  # GENERATED-REGRESSOR CAVEAT: the equilibrium errors u_t are constructed from
+  # *estimated* OU parameters (mu, beta, phi). Applying ADF/PP with the standard
+  # Dickey-Fuller critical values to these residuals over-rejects the unit-root
+  # null (the correct nulls are the residual-based cointegration critical values
+  # of MacKinnon or Phillips-Ouliaris). Treat a rejection here as suggestive, not
+  # confirmatory, and corroborate with `test_cointegration_control()`.
+  caveat <- paste0(
+    "ADF/PP applied to estimated OU residuals (generated regressors): standard ",
+    "DF critical values over-reject; corroborate with Johansen cointegration."
+  )
+  if (isTRUE(warn)) warning(caveat, call. = FALSE)
+
   errs <- compute_equilibrium_errors(factors_data, ou_result, use_lagged_X = use_lagged_X)
-  out <- list()
+  out <- list(caveat = caveat)
   
   run_tests <- function(U) {
     if (is.null(U)) return(NULL)
@@ -306,8 +330,17 @@ test_cointegration_control <- function(factors_data,
   idx5 <- which(colnames(cval_mat) %in% c("5pct", "5%"))
   if (length(idx5) == 0L) idx5 <- 2L
   crit_vals <- cval_mat[, idx5]
-  
-  n_coint <- sum(test_stats > crit_vals)
+
+  # Sequential rank determination. urca orders the statistics from the highest
+  # rank null down to r = 0; reverse so we test r = 0, 1, 2, ... and count the
+  # leading run of rejections. (A bare sum of exceedances can miscount when the
+  # statistics are not perfectly monotone.)
+  ord  <- rev(seq_along(test_stats))
+  rej  <- test_stats[ord] > crit_vals[ord]
+  n_coint <- 0L
+  for (b in rej) {
+    if (isTRUE(b)) n_coint <- n_coint + 1L else break
+  }
   
   if (verbose) {
     message("\nCointegration relationships (5%): ", n_coint)

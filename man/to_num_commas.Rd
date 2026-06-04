@@ -2,26 +2,43 @@
 % Please edit documentation in R/utils.R
 \name{to_num_commas}
 \alias{to_num_commas}
-\title{Convert European number format to numeric}
+\title{Convert localized number strings to numeric}
 \usage{
 to_num_commas(x)
 }
 \arguments{
-\item{x}{Numeric value or character string in European format (e.g., "1.234,56").}
+\item{x}{Numeric value or character vector with localized number strings.}
 }
 \value{
-Numeric value. Returns \code{NA} if conversion fails.
+Numeric vector the same length as \code{x}. Entries that cannot be
+parsed become \code{NA}.
 }
 \description{
-Converts character strings in European number format (using comma as decimal
-separator and period as thousands separator) to numeric values. Already numeric
-inputs are returned unchanged.
+Converts character strings that may use either the European convention
+(comma decimal separator, period thousands separator, e.g. "1.234,56") or the
+Anglo-Saxon convention (period decimal separator, comma thousands separator,
+e.g. "1,234.56") to numeric. Plain numbers and already-numeric inputs are
+returned unchanged. The function is vectorized.
+}
+\details{
+Disambiguation rules, applied per element after stripping whitespace:
+\itemize{
+\item If both \code{.} and \code{,} are present, the \emph{rightmost} of
+the two is treated as the decimal mark and the other as the thousands
+separator.
+\item If only commas are present: a single comma is treated as a decimal
+mark; multiple commas are treated as thousands separators and removed.
+\item If only periods are present: a single period is treated as a decimal
+mark (Anglo-Saxon); multiple periods are treated as thousands separators
+and removed.
+}
+The single ambiguous case "1.234" (one period, no comma) is interpreted as
+the decimal 1.234, not as 1234.
 }
 \examples{
-\donttest{
-to_num_commas("1.234,56")
-to_num_commas("1234.56")
-to_num_commas(1234.56)
-}
+to_num_commas("1.234,56")   # European  -> 1234.56
+to_num_commas("1,234.56")   # US        -> 1234.56
+to_num_commas("1234.56")    # plain     -> 1234.56
+to_num_commas(1234.56)      # numeric   -> 1234.56
 
 }

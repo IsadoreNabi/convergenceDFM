@@ -9,6 +9,7 @@ test_reweighting_robustness(
   path_weights,
   X_matrix,
   max_comp = 3,
+  seed = 123,
   verbose = TRUE
 )
 }
@@ -21,19 +22,23 @@ test_reweighting_robustness(
 
 \item{max_comp}{Maximum number of components (default: 3)}
 
+\item{seed}{Optional integer for reproducible priors (default: 123).}
+
 \item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
 }
 \value{
 List with components:
 \describe{
-\item{\code{lambda_distribution}}{Matrix of lambda estimates across schemes.}
-\item{\code{original_lambda}}{Baseline lambda from original weights.}
-\item{\code{robust_factors}}{Logical vector indicating robust convergence.}
-\item{\code{sensitivity_metrics}}{Summary statistics of sensitivity.}
+\item{\code{results}}{Per-scheme list with \code{coupling} and
+\code{half_life_mean}.}
+\item{\code{cv_coupling}}{Coefficient of variation of coupling across
+schemes.}
+\item{\code{robust}}{\code{TRUE} if \code{cv_coupling < 0.3}.}
 }
 }
 \description{
-Tests sensitivity of convergence results to alternative sectoral weighting
-schemes by re-running Bayesian disaggregation and full pipeline with
-perturbed weights.
+Tests sensitivity of the coupling result to alternative sectoral weighting
+schemes by re-running the weight-blend disaggregation and the (fallback)
+factor-OU pipeline with perturbed weights. The coefficient of variation of the
+coupling across schemes summarizes the sensitivity.
 }

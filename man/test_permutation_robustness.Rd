@@ -2,7 +2,7 @@
 % Please edit documentation in R/robustness_tests.R
 \name{test_permutation_robustness}
 \alias{test_permutation_robustness}
-\title{Permutation-based robustness test}
+\title{Permutation-based robustness test for X->Y coupling}
 \usage{
 test_permutation_robustness(
   factors_data,
@@ -16,37 +16,46 @@ test_permutation_robustness(
 )
 }
 \arguments{
-\item{factors_data}{Data frame with factor information}
+\item{factors_data}{List with \code{scores_X}, \code{scores_Y}.}
 
-\item{data_prep}{Prepared data object}
+\item{data_prep}{Prepared data object (passed to the OU estimator).}
 
-\item{n_perms}{Number of permutations (default: 100)}
+\item{n_perms}{Number of permutations (default: 100).}
 
-\item{seed}{Random seed for reproducibility (default: 123)}
+\item{seed}{Random seed for reproducibility (default: 123). Now honoured.}
 
-\item{use_stan}{Logical, use Stan for estimation (default: TRUE)}
+\item{use_stan}{Logical, use Stan for estimation (default: TRUE).}
 
-\item{chains}{Number of MCMC chains (default: 4)}
+\item{chains}{Number of MCMC chains (default: 4).}
 
-\item{iter}{Number of MCMC iterations (default: 2000)}
+\item{iter}{Number of MCMC iterations (default: 2000).}
 
 \item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
 }
 \value{
 List with components:
 \describe{
-\item{\code{observed_lambda}}{Original mean-reversion speeds.}
-\item{\code{null_distribution}}{Matrix of permutation-based lambda values.}
-\item{\code{p_values}}{One-sided p-values for each factor.}
-\item{\code{significant}}{Logical vector indicating significance at alpha = 0.05.}
-\item{\code{effect_size}}{Standardized effect sizes (z-scores).}
+\item{\code{baseline}}{Observed coupling strength.}
+\item{\code{permuted_mean}, \code{permuted_median}, \code{permuted_sd}}{
+Summary of the null coupling distribution.}
+\item{\code{p_value}}{Monte Carlo one-sided p-value
+\code{(1 + #{null >= baseline}) / (n + 1)}.}
+\item{\code{z_score}}{Standardized effect size.}
+\item{\code{robust}}{\code{TRUE} if \code{p_value < 0.05}.}
+\item{\code{n_successful}}{Number of usable replicates.}
 }
 }
 \description{
-Tests the robustness of factor-OU convergence findings by randomly permuting
-the Y factor space and re-estimating the model. Generates empirical null
-distribution for convergence statistics.
+Tests whether the estimated X->Y coupling strength is stronger than expected
+when the temporal alignment between X and Y is broken. The null is generated
+by circularly time-shifting the Y factors, which preserves Y's own
+autocorrelation while destroying the cross-series relationship.
 }
-\details{
-(too slow for many iterations).
+\section{Why not a column permutation}{
+
+The previous version permuted the \emph{columns} of the Y factors. The coupling
+strength is a Frobenius norm of the coupling matrix and is invariant to such a
+relabelling, so the old null was degenerate (every replicate reproduced the
+baseline). Shuffling time, not factor labels, is what tests coupling.
 }
+

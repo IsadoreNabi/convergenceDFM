@@ -2,34 +2,36 @@
 % Please edit documentation in R/rotation_tests.R
 \name{run_rotation_null_on_results}
 \alias{run_rotation_null_on_results}
-\title{Run rotation null test on complete analysis results}
+\title{Run the coupling null test on complete analysis results}
 \usage{
 run_rotation_null_on_results(
   results_robust,
   lag = 1,
   B = 1000,
   seed = 42,
-  rotate = "Y",
+  null_method = c("circular_shift", "rotation"),
   compute = c("procrustes", "cca", "principal", "dynbeta")
 )
 }
 \arguments{
-\item{results_robust}{Output from run_complete_factor_analysis_robust()}
+\item{results_robust}{Output from \code{run_complete_factor_analysis_robust()}.}
 
-\item{lag}{Number of lags for the model (default: 1)}
+\item{lag}{Number of lags for the X->Y relationship (default 1).}
 
-\item{B}{Number of bootstrap iterations (default: 1000)}
+\item{B}{Number of null replicates (default 1000).}
 
-\item{seed}{Random seed for reproducibility (default: 42)}
+\item{seed}{Random seed for reproducibility (default 42).}
 
-\item{rotate}{Which dataset to rotate: 'X' or 'Y' (default: 'Y')}
+\item{null_method}{Null mechanism passed to \code{rotation_null_test()};
+"circular_shift" (default) or "rotation" (diagnostic).}
 
-\item{compute}{Vector of methods to compute: 'procrustes', 'cca', 'principal', 'dynbeta'}
+\item{compute}{Statistics to compute: 'procrustes', 'cca', 'principal',
+'dynbeta'.}
 }
 \value{
-List. Output from \code{rotation_null_test}.
+List. Output from \code{\link{rotation_null_test}}.
 }
 \description{
-Wrapper function that extracts factors from a complete analysis object and
-runs the rotation null test.
+Wrapper that extracts factors from a complete analysis object and runs
+\code{\link{rotation_null_test}} with the corrected time-shift null.
 }

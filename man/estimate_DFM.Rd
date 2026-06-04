@@ -9,6 +9,7 @@ estimate_DFM(
   p = 2,
   compute_oos = TRUE,
   hc_type = "HC3",
+  hac = FALSE,
   verbose = TRUE
 )
 }
@@ -22,16 +23,29 @@ estimate_DFM(
 
 \item{hc_type}{Character string. Heteroskedasticity-consistent SE type. Default is "HC3".}
 
+\item{hac}{Logical. If \code{TRUE} and \pkg{sandwich} is installed, use a
+heteroskedasticity- and autocorrelation-consistent (Newey-West) covariance
+instead of HC. Default \code{FALSE}.}
+
 \item{verbose}{Logical; print progress and diagnostic information. Default \code{TRUE}.}
 }
 \value{
 List with components:
 \describe{
-\item{\code{var_fit}}{Fitted VAR model on combined factors.}
+\item{\code{var_model}}{Fitted VAR model (\code{vars::varest}).}
 \item{\code{p_used}}{VAR lag order used.}
-\item{\code{robust_se}}{Matrices of robust standard errors.}
-\item{\code{diagnostics}}{List of diagnostic tests (stability, serial correlation).}
-\item{\code{oos_metrics}}{Out-of-sample forecast evaluation (if requested).}
+\item{\code{roots}, \code{is_stable}}{Companion-root moduli and stability flag.}
+\item{\code{half_lives}, \code{half_life_dominant}}{Per-root half-lives and
+the half-life of the largest-modulus (slowest) root, which governs
+system persistence.}
+\item{\code{r2_eq}, \code{r2_adj_eq}, \code{r2_global}}{In-sample R2.}
+\item{\code{r2_oos_eq}, \code{r2_oos_global}, \code{mse_oos_eq}}{Out-of
+-sample diagnostics (if requested), reported \emph{unclipped}.}
+\item{\code{robust_se}}{Per-equation list of robust standard errors.}
+\item{\code{robust_inference}}{Per-equation list of \code{coef}, \code{se},
+\code{t}, \code{p} from HC/HAC robust inference.}
+\item{\code{portmanteau_p}}{Portmanteau serial-correlation p-value.}
+\item{\code{hc_type}}{The HC type used.}
 }
 }
 \description{
@@ -43,4 +57,8 @@ robust inference, and optional out-of-sample evaluation.
 This function models the joint dynamics of X and Y factors using a VAR.
 It performs stability checks, tests for serial correlation, computes robust
 standard errors, and optionally evaluates forecast performance out-of-sample.
+Robust covariance uses \pkg{sandwich}/\pkg{lmtest} when available and a
+self-contained HC (HC0-HC4) implementation otherwise. Because the factors are
+PLS scores (supervised on Y), in-sample fit is optimistic; rely on the
+out-of-sample diagnostics. See the vignette section "Methodological notes".
 }

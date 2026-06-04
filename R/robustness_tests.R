@@ -27,6 +27,8 @@ project_to_simplex <- function(v) {
 #'
 #' @param mip_weights Numeric matrix of baseline sectoral weights.
 #' @param n_sectors Integer. Number of sectors.
+#' @param seed Optional integer; seeds the random prior for reproducibility. The
+#'   RNG state is restored on exit. Default \code{NULL}.
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
 #'
 #' @return List of alternative prior matrices.
@@ -34,26 +36,38 @@ project_to_simplex <- function(v) {
 #' @keywords internal
 #' @noRd
 
-generate_alternative_priors <- function(mip_weights, n_sectors, verbose = TRUE) {
+generate_alternative_priors <- function(mip_weights, n_sectors, seed = NULL,
+                                        verbose = TRUE) {
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+
   if (verbose) {
     message("\n========================================")
     message("GENERATION OF ALTERNATIVE PRIORS")
     message("========================================\n")
   }
-  
+
   priors <- list()
-  
-  priors$equal <- rep(1/n_sectors, n_sectors)
+
+  priors$equal <- rep(1 / n_sectors, n_sectors)
   if (verbose) {
     message("OK: Generated equiprobable prior")
   }
-  
+
   random_vec <- runif(n_sectors)
   random_vec <- random_vec / sum(random_vec)
-  
-  proj_mip <- sum(random_vec * mip_weights) * mip_weights
+
+  # Correct Euclidean projection onto mip_weights: (a.b / ||b||^2) b.
+  denom <- sum(mip_weights^2)
+  proj_mip <- if (denom > 0) (sum(random_vec * mip_weights) / denom) * mip_weights
+              else rep(0, length(mip_weights))
   orthogonal <- random_vec - proj_mip
-  
+
   priors$orthogonal <- project_to_simplex(orthogonal + 0.1)
   
   cor_check <- cor(priors$orthogonal, mip_weights)
@@ -74,47 +88,59 @@ generate_alternative_priors <- function(mip_weights, n_sectors, verbose = TRUE) 
   priors
 }
 
-#' Permutation-based robustness test
+#' Permutation-based robustness test for X->Y coupling
 #'
-#' Tests the robustness of factor-OU convergence findings by randomly permuting
-#' the Y factor space and re-estimating the model. Generates empirical null
-#' distribution for convergence statistics.
+#' Tests whether the estimated X->Y coupling strength is stronger than expected
+#' when the temporal alignment between X and Y is broken. The null is generated
+#' by circularly time-shifting the Y factors, which preserves Y's own
+#' autocorrelation while destroying the cross-series relationship.
 #'
-#'   (too slow for many iterations).
+#' @section Why not a column permutation:
+#' The previous version permuted the \emph{columns} of the Y factors. The coupling
+#' strength is a Frobenius norm of the coupling matrix and is invariant to such a
+#' relabelling, so the old null was degenerate (every replicate reproduced the
+#' baseline). Shuffling time, not factor labels, is what tests coupling.
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{observed_lambda}}{Original mean-reversion speeds.}
-#'     \item{\code{null_distribution}}{Matrix of permutation-based lambda values.}
-#'     \item{\code{p_values}}{One-sided p-values for each factor.}
-#'     \item{\code{significant}}{Logical vector indicating significance at alpha = 0.05.}
-#'     \item{\code{effect_size}}{Standardized effect sizes (z-scores).}
+#'     \item{\code{baseline}}{Observed coupling strength.}
+#'     \item{\code{permuted_mean}, \code{permuted_median}, \code{permuted_sd}}{
+#'       Summary of the null coupling distribution.}
+#'     \item{\code{p_value}}{Monte Carlo one-sided p-value
+#'       \code{(1 + #{null >= baseline}) / (n + 1)}.}
+#'     \item{\code{z_score}}{Standardized effect size.}
+#'     \item{\code{robust}}{\code{TRUE} if \code{p_value < 0.05}.}
+#'     \item{\code{n_successful}}{Number of usable replicates.}
 #'   }
 #'
-#'
-#' @param factors_data Data frame with factor information
-#' @param data_prep Prepared data object
-#' @param n_perms Number of permutations (default: 100)
-#' @param seed Random seed for reproducibility (default: 123)
-#' @param use_stan Logical, use Stan for estimation (default: TRUE)
-#' @param chains Number of MCMC chains (default: 4)
-#' @param iter Number of MCMC iterations (default: 2000)
+#' @param factors_data List with \code{scores_X}, \code{scores_Y}.
+#' @param data_prep Prepared data object (passed to the OU estimator).
+#' @param n_perms Number of permutations (default: 100).
+#' @param seed Random seed for reproducibility (default: 123). Now honoured.
+#' @param use_stan Logical, use Stan for estimation (default: TRUE).
+#' @param chains Number of MCMC chains (default: 4).
+#' @param iter Number of MCMC iterations (default: 2000).
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
 #' @export
 
-test_permutation_robustness <- function(factors_data, data_prep, 
+test_permutation_robustness <- function(factors_data, data_prep,
                                         n_perms = 100, seed = 123,
-                                        use_stan = TRUE, 
+                                        use_stan = TRUE,
                                         chains = 4, iter = 2000,
                                         verbose = TRUE) {
+  if (!is.null(seed)) {
+    if (exists(".Random.seed", envir = .GlobalEnv)) {
+      old_seed <- get(".Random.seed", envir = .GlobalEnv)
+      on.exit(assign(".Random.seed", old_seed, envir = .GlobalEnv), add = TRUE)
+    }
+    set.seed(seed)
+  }
+
   if (verbose) {
     message("\n========================================")
-    message("CORRESPONDENCE PERMUTATION TEST")
+    message("TIME-SHIFT COUPLING PERMUTATION TEST")
     message("========================================\n")
-  }
-  
-  if (verbose) {
-    message("Calculando baseline con datos originales...")
+    message("Computing baseline on the original data...")
   }
   
   if (use_stan) {
@@ -138,7 +164,7 @@ test_permutation_robustness <- function(factors_data, data_prep,
   
   baseline_coupling <- ou_baseline$coupling_strength
   if (verbose) {
-    message(sprintf("Acoplamiento baseline: %.4f", baseline_coupling))
+    message(sprintf("Baseline coupling: %.4f", baseline_coupling))
   }
   
   if (verbose) {
@@ -157,11 +183,13 @@ test_permutation_robustness <- function(factors_data, data_prep,
     pb <- txtProgressBar(min = 0, max = n_perms, style = 3)
   }
   
+  Ty <- nrow(as.matrix(factors_data$scores_Y))
   for (i in 1:n_perms) {
-    perm_idx <- sample(ncol(factors_data$scores_Y))
+    # Break the X->Y temporal alignment by circularly shifting Y in time.
+    tau <- sample.int(max(2L, Ty) - 1L, 1L)
     factors_perm <- factors_data
-    factors_perm$scores_Y <- factors_data$scores_Y[, perm_idx]
-    
+    factors_perm$scores_Y <- circ_shift_rows(as.matrix(factors_data$scores_Y), tau)
+
     if (use_stan) {
       ou_perm <- tryCatch(
         suppressMessages(
@@ -199,44 +227,32 @@ test_permutation_robustness <- function(factors_data, data_prep,
   
   valid_perms <- perm_couplings[!is.na(perm_couplings)]
   if (verbose) {
-    message(sprintf("\n\nPermutaciones exitosas: %d/%d", successful_perms, n_perms))
+    message(sprintf("\n\nSuccessful permutations: %d/%d", successful_perms, n_perms))
   }
-  
+
   if (length(valid_perms) < 10) {
     if (verbose) message("FAIL: Insufficient successful permutations")
     return(NULL)
   }
-  
+
   mean_perm <- mean(valid_perms)
   sd_perm <- sd(valid_perms)
   median_perm <- median(valid_perms)
-  
+
+  # Monte Carlo one-sided p-value with the (1 + .)/(n + 1) correction.
+  p_value <- (1 + sum(valid_perms >= baseline_coupling)) / (length(valid_perms) + 1)
+  z_score <- (baseline_coupling - mean_perm) / (sd_perm + 1e-10)
+  robust <- isTRUE(p_value < 0.05)
+
   if (verbose) {
     message("\n=====================================")
     message("RESULTS:")
     message(sprintf("  Original coupling: %.4f", baseline_coupling))
-    message(sprintf("  Permuted coupling:"))
-    message(sprintf("    - Mean: %.4f (SD: %.4f)", mean_perm, sd_perm))
-    message(sprintf("    - Median: %.4f", median_perm))
-  }
-  
-  p_value <- mean(valid_perms >= baseline_coupling)
-  z_score <- (baseline_coupling - mean_perm) / (sd_perm + 1e-10)
-  
-  if (verbose) {
-    message(sprintf("  p-valor: %.4f", p_value))
-    message(sprintf("  z-score: %.2f", z_score))
-  }
-  
-  if (z_score > 2) {
-    if (verbose) message("\nOK: ROBUST signal (z > 2)")
-    robust <- TRUE
-  } else if (z_score > 1) {
-    if (verbose) message("\nWARNING: Moderate signal (1 < z < 2)")
-    robust <- FALSE
-  } else {
-    if (verbose) message("\nFAIL: Spurious signal (z < 1)")
-    robust <- FALSE
+    message(sprintf("  Null coupling: mean %.4f (SD %.4f), median %.4f",
+                    mean_perm, sd_perm, median_perm))
+    message(sprintf("  p-value: %.4f | z-score: %.2f", p_value, z_score))
+    message(if (robust) "  -> Coupling exceeds the time-shift null (p < 0.05)"
+            else        "  -> Coupling NOT distinguishable from the null (p >= 0.05)")
   }
   
   list(
@@ -253,47 +269,49 @@ test_permutation_robustness <- function(factors_data, data_prep,
 
 #' Reweighting-based robustness test
 #'
-#' Tests sensitivity of convergence results to alternative sectoral weighting
-#' schemes by re-running Bayesian disaggregation and full pipeline with
-#' perturbed weights.
-#'
+#' Tests sensitivity of the coupling result to alternative sectoral weighting
+#' schemes by re-running the weight-blend disaggregation and the (fallback)
+#' factor-OU pipeline with perturbed weights. The coefficient of variation of the
+#' coupling across schemes summarizes the sensitivity.
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{lambda_distribution}}{Matrix of lambda estimates across schemes.}
-#'     \item{\code{original_lambda}}{Baseline lambda from original weights.}
-#'     \item{\code{robust_factors}}{Logical vector indicating robust convergence.}
-#'     \item{\code{sensitivity_metrics}}{Summary statistics of sensitivity.}
+#'     \item{\code{results}}{Per-scheme list with \code{coupling} and
+#'       \code{half_life_mean}.}
+#'     \item{\code{cv_coupling}}{Coefficient of variation of coupling across
+#'       schemes.}
+#'     \item{\code{robust}}{\code{TRUE} if \code{cv_coupling < 0.3}.}
 #'   }
-#'
 #'
 #' @param path_cpi Path to CPI data file
 #' @param path_weights Path to weights data file
 #' @param X_matrix Matrix of variables
 #' @param max_comp Maximum number of components (default: 3)
+#' @param seed Optional integer for reproducible priors (default: 123).
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
 #' @export
 
 test_reweighting_robustness <- function(path_cpi, path_weights, X_matrix,
-                                        max_comp = 3, verbose = TRUE) {
+                                        max_comp = 3, seed = 123, verbose = TRUE) {
   if (verbose) {
     message("\n========================================")
     message("ROBUSTNESS TEST BY REWEIGHTING")
     message("========================================\n")
   }
-  
+
   if (!file.exists(path_cpi) || !file.exists(path_weights)) {
     if (verbose) message("FAIL: Files not found")
     return(NULL)
   }
-  
-  tryCatch({
-    weights_data <- read_weights_matrix(path_weights)
-  }, error = function(e) {
-    if (verbose) message("FAIL: Error reading weights:", e$message)
-    return(NULL)
-  })
-  
+
+  weights_data <- tryCatch(
+    read_weights_matrix(path_weights),
+    error = function(e) {
+      if (verbose) message("FAIL: Error reading weights: ", e$message)
+      NULL
+    }
+  )
+
   if (is.null(weights_data)) {
     if (verbose) message("FAIL: The weights could not be read")
     return(NULL)
@@ -307,8 +325,9 @@ test_reweighting_robustness <- function(path_cpi, path_weights, X_matrix,
     message("Years:", length(weights_data$years), "\n")
   }
   
-  alt_priors <- generate_alternative_priors(mip_weights, n_sectors, verbose = verbose)
-  
+  alt_priors <- generate_alternative_priors(mip_weights, n_sectors,
+                                            seed = seed, verbose = verbose)
+
   results_reweight <- list()
   
   for (prior_name in names(alt_priors)) {
@@ -420,105 +439,126 @@ test_reweighting_robustness <- function(path_cpi, path_weights, X_matrix,
   )
 }
 
-#' Jackknife robustness test by sector
+#' Delete-one-sector jackknife of the X->Y coupling
 #'
-#' Assesses the influence of individual sectors by systematically dropping each
-#' sector and re-estimating convergence parameters. Identifies influential
-#' sectors and checks stability.
-#'
-#'   column names.
+#' Genuine leave-one-sector-out jackknife: each sector (column) is dropped in
+#' turn from both X and Y, the coupling is re-estimated, and the delete-one
+#' replicates are used to compute the jackknife bias and standard error and to
+#' rank sectors by influence. (The previous version dropped the top-\code{k}
+#' highest-variance sectors a single time and was not a jackknife.)
 #'
 #' @return List with components:
 #'   \describe{
-#'     \item{\code{jackknife_estimates}}{Matrix of lambda estimates (iterations x factors).}
-#'     \item{\code{original_estimate}}{Original lambda from full sample.}
-#'     \item{\code{bias}}{Estimated jackknife bias.}
-#'     \item{\code{se}}{Jackknife standard errors.}
-#'     \item{\code{influential_sectors}}{Character vector of highly influential sectors.}
-#'     \item{\code{dfbetas}}{Matrix of influence measures (DFBETAS).}
+#'     \item{\code{baseline}}{Full-sample coupling.}
+#'     \item{\code{jackknife_estimates}}{Named vector of delete-one coupling
+#'       estimates.}
+#'     \item{\code{bias}}{Jackknife bias estimate \code{(n-1)(mean(jk) - full)}.}
+#'     \item{\code{se}}{Jackknife standard error.}
+#'     \item{\code{influence}}{Per-sector change \code{full - jk_i} (signed).}
+#'     \item{\code{retention}}{Per-sector \code{jk_i / full}.}
+#'     \item{\code{influential_sectors}}{The \code{k_exclude} most influential
+#'       sectors.}
+#'     \item{\code{robust}}{\code{TRUE} if no single sector changes the coupling
+#'       by more than 50 percent.}
 #'   }
 #'
-#'
-#' @param X_matrix Matrix of first set of variables
-#' @param Y_matrix Matrix of second set of variables
-#' @param sector_names Vector of sector names (default: NULL)
-#' @param k_exclude Number of sectors to exclude in each iteration (default: 3)
+#' @param X_matrix Matrix of first set of variables (sectors in columns)
+#' @param Y_matrix Matrix of second set of variables (sectors in columns)
+#' @param sector_names Vector of sector names (default: column names of Y)
+#' @param k_exclude Number of most-influential sectors to report (default: 3)
 #' @param max_comp Maximum number of components (default: 3)
+#' @param seed Optional integer for reproducible component selection/diagnostics.
 #' @param verbose Logical; print progress and diagnostic information. Default \code{TRUE}.
 #' @export
 
 test_jackknife_sectors <- function(X_matrix, Y_matrix, sector_names = NULL,
-                                   k_exclude = 3, max_comp = 3, verbose = TRUE) {
+                                   k_exclude = 3, max_comp = 3, seed = 123,
+                                   verbose = TRUE) {
   if (verbose) {
     message("\n========================================")
-    message("JACKKNIFE FOR HEAVY SECTORS")
+    message("DELETE-ONE-SECTOR JACKKNIFE")
     message("========================================\n")
   }
-  
-  var_sectors <- apply(Y_matrix, 2, var)
-  top_k <- order(var_sectors, decreasing = TRUE)[1:min(k_exclude, ncol(Y_matrix))]
-  
-  if (verbose) {
-    message("Excluyendo sectores:", paste(top_k, collapse = ", "), "\n")
+
+  X_matrix <- as.matrix(X_matrix)
+  Y_matrix <- as.matrix(Y_matrix)
+  n_sec <- ncol(Y_matrix)
+  if (is.null(sector_names)) {
+    sector_names <- colnames(Y_matrix)
+    if (is.null(sector_names)) sector_names <- paste0("S", seq_len(n_sec))
   }
-  
-  data_full <- diagnose_data(X_matrix, Y_matrix, verbose = verbose)
-  data_prep_full <- list(
-    X_scaled = scale(data_full$X_matrix),
-    Y_scaled = scale(data_full$Y_matrix)
-  )
-  
-  selection_full <- select_optimal_components_safe(
-    data_prep_full$X_scaled,
-    data_prep_full$Y_scaled,
-    max_comp,
-    verbose = verbose
-  )
-  
-  factors_full <- list(
-    scores_X = selection_full$pls_model$scores[, 1:selection_full$optimal_ncomp, drop = FALSE],
-    scores_Y = selection_full$pls_model$Yscores[, 1:selection_full$optimal_ncomp, drop = FALSE]
-  )
-  
-  ou_full <- estimate_factor_OU_fallback(factors_full, verbose = verbose)
-  baseline_coupling <- ou_full$coupling_strength
-  
-  Y_reduced <- Y_matrix[, -top_k, drop = FALSE]
-  X_reduced <- X_matrix[, -top_k, drop = FALSE]
-  
-  data_red <- diagnose_data(X_reduced, Y_reduced, verbose = verbose)
-  data_prep_red <- list(
-    X_scaled = scale(data_red$X_matrix),
-    Y_scaled = scale(data_red$Y_matrix)
-  )
-  
-  selection_red <- select_optimal_components_safe(
-    data_prep_red$X_scaled,
-    data_prep_red$Y_scaled,
-    max_comp,
-    verbose = verbose
-  )
-  
-  factors_red <- list(
-    scores_X = selection_red$pls_model$scores[, 1:selection_red$optimal_ncomp, drop = FALSE],
-    scores_Y = selection_red$pls_model$Yscores[, 1:selection_red$optimal_ncomp, drop = FALSE]
-  )
-  
-  ou_red <- estimate_factor_OU_fallback(factors_red, verbose = verbose)
-  jackknife_coupling <- ou_red$coupling_strength
-  
-  retention_rate <- jackknife_coupling / baseline_coupling
-  
-  if (verbose) {
-    message(sprintf("Complete coupling: %.4f", baseline_coupling))
-    message(sprintf("Reduced coupling: %.4f", jackknife_coupling))
-    message(sprintf("Retention: %.0f%%", retention_rate * 100))
+
+  coupling_of <- function(Xm, Ym) {
+    if (ncol(Xm) < 1 || ncol(Ym) < 1 || nrow(Xm) < 5) return(NA_real_)
+    dc <- tryCatch(diagnose_data(Xm, Ym, verbose = FALSE, seed = seed),
+                   error = function(e) NULL)
+    if (is.null(dc)) return(NA_real_)
+    sel <- tryCatch(suppressMessages(
+      select_optimal_components_safe(scale(dc$X_matrix), scale(dc$Y_matrix),
+                                     max_comp = max_comp, seed = seed, verbose = FALSE)),
+      error = function(e) NULL)
+    if (is.null(sel)) return(NA_real_)
+    k <- sel$optimal_ncomp
+    fac <- list(
+      scores_X = sel$pls_model$scores[, 1:k, drop = FALSE],
+      scores_Y = sel$pls_model$Yscores[, 1:k, drop = FALSE]
+    )
+    ou <- tryCatch(suppressMessages(estimate_factor_OU_fallback(fac, verbose = FALSE)),
+                   error = function(e) NULL)
+    if (is.null(ou)) NA_real_ else ou$coupling_strength
   }
-  
+
+  baseline <- coupling_of(X_matrix, Y_matrix)
+  if (!is.finite(baseline)) {
+    if (verbose) message("FAIL: baseline coupling could not be computed")
+    return(NULL)
+  }
+
+  jk <- rep(NA_real_, n_sec); names(jk) <- sector_names
+  if (verbose) pb <- txtProgressBar(min = 0, max = n_sec, style = 3)
+  for (j in seq_len(n_sec)) {
+    Xj <- if (j <= ncol(X_matrix)) X_matrix[, -j, drop = FALSE] else X_matrix
+    Yj <- Y_matrix[, -j, drop = FALSE]
+    jk[j] <- coupling_of(Xj, Yj)
+    if (verbose) setTxtProgressBar(pb, j)
+  }
+  if (verbose) close(pb)
+
+  valid <- is.finite(jk)
+  jkv <- jk[valid]
+  n <- length(jkv)
+  if (n < 2) {
+    if (verbose) message("FAIL: too few valid jackknife replicates")
+    return(list(baseline = baseline, jackknife_estimates = jk, robust = NA))
+  }
+
+  jack_mean <- mean(jkv)
+  bias <- (n - 1) * (jack_mean - baseline)
+  se   <- sqrt((n - 1) / n * sum((jkv - jack_mean)^2))
+  influence <- baseline - jk                      # signed
+  retention <- jk / baseline
+  rel_change <- abs(influence) / (abs(baseline) + 1e-12)
+
+  ord <- order(abs(influence), decreasing = TRUE, na.last = NA)
+  influential_sectors <- sector_names[ord][seq_len(min(k_exclude, length(ord)))]
+  robust <- isTRUE(max(rel_change, na.rm = TRUE) < 0.5)
+
+  if (verbose) {
+    message(sprintf("\nFull-sample coupling: %.4f", baseline))
+    message(sprintf("Jackknife bias: %.4f | SE: %.4f", bias, se))
+    message("Most influential sectors: ", paste(influential_sectors, collapse = ", "))
+    message(if (robust) "OK: no single sector dominates (<50% change)"
+            else        "WARNING: at least one sector changes coupling by >50%")
+  }
+
   list(
-    baseline = baseline_coupling,
-    jackknife = jackknife_coupling,
-    retention_rate = retention_rate,
-    robust = retention_rate > 0.7
+    baseline = baseline,
+    jackknife_estimates = jk,
+    bias = bias,
+    se = se,
+    influence = influence,
+    retention = retention,
+    influential_sectors = influential_sectors,
+    robust = robust
   )
 }
