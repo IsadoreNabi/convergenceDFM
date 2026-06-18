@@ -38,7 +38,21 @@ schemes.}
 }
 \description{
 Tests sensitivity of the coupling result to alternative sectoral weighting
-schemes by re-running the weight-blend disaggregation and the (fallback)
-factor-OU pipeline with perturbed weights. The coefficient of variation of the
-coupling across schemes summarizes the sensitivity.
+schemes. For each perturbed weight vector the sectoral price levels are
+obtained from the canonical closed-form conjugate disaggregation
+(\code{\link[BayesianDisaggregation:disaggregate_conjugate]{BayesianDisaggregation::disaggregate_conjugate()}}, a Kalman/RTS smoother that
+conditions genuinely on the aggregate CPI), and the (fallback) factor-OU
+coupling is re-estimated. The coefficient of variation of the coupling across
+schemes summarizes the sensitivity.
 }
+\section{Canonical disaggregation}{
+
+Earlier versions used a deterministic weight blend
+(\code{run_disaggregation_custom_prior}) that did not condition on the CPI. That
+method is removed; the single source of truth is now the conjugate engine in
+\pkg{BayesianDisaggregation}. A constant-in-time custom prior is replicated
+across periods to form the value-added (VAB) weight matrix \code{W}, and the point
+estimate used is the posterior median (\verb{$phi_summary$median}), i.e. the
+RTS-smoothed sectoral levels, now genuinely conditioned on the CPI.
+}
+

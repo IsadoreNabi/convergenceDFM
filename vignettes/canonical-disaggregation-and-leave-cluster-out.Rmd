@@ -1,0 +1,163 @@
+---
+title: "Canonical disaggregation and the Leave-Cluster-Out test"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Canonical disaggregation and the Leave-Cluster-Out test}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+```{r setup}
+library(convergenceDFM)
+```
+
+This vignette documents two design decisions of version 0.3.0:
+
+1. the **single, canonical disaggregation engine** (imported from
+   **BayesianDisaggregation**, replacing a local duplicate), and
+2. the **Leave-Cluster-Out** test, which generalizes the delete-one-sector
+   jackknife to dropping an entire group of sectors at once.
+
+Both follow the project's standing criteria: maximum multidimensional robustness;
+keeping the algebraic, statistical and numerical layers separate; no claims of
+uniqueness; and a deliberately plain reading of "surviving a leave-out" as
+**predictive robustness under dependence**, not a topological invariant.
+
+## 1. One disaggregation engine, not two
+
+Earlier versions of `convergenceDFM` carried their own
+`run_disaggregation_custom_prior()`: a deterministic convex blend of a prior
+weight matrix with a singular-vector "likelihood". That blend never conditioned
+on the observed aggregate index (the Consumer Price Index, CPI) -- it was a
+weighting heuristic dressed in Bayesian vocabulary -- and it duplicated the
+purpose of the dedicated disaggregation package.
+
+Version 0.3.0 removes that duplicate. The canonical disaggregation now lives in
+one place, **BayesianDisaggregation**, and `convergenceDFM` imports it. The
+asset reused is the *engine*, `BayesianDisaggregation::disaggregate_conjugate()`:
+an exact, closed-form linear-Gaussian state-space posterior (a Kalman filter
+with a Rauch-Tung-Striebel smoother) for the sectoral price levels given the
+aggregate index and the value-added weights. It conditions genuinely on the CPI,
+and -- being pure R, with no Markov chain Monte Carlo -- it is fast enough to use
+inside a resampling loop.
+
+```{r conjugate}
+set.seed(1)
+Tn <- 20; K <- 4
+cpi <- 100 * cumprod(1 + rnorm(Tn, 0.02, 0.01)) + 50   # a positive aggregate index
+W   <- matrix(runif(Tn * K), Tn, K); W <- W / rowSums(W)
+
+fit <- BayesianDisaggregation::disaggregate_conjugate(cpi, W)
+dim(fit$phi_summary$median)     # [T x K] smoothed sectoral levels
+```
+
+The honest identification is unchanged from the disaggregation package: the
+*aggregate* is strongly identified, the *sectoral* split is weakly identified by
+construction (one linear combination is pinned per period; the remaining
+directions are governed by the prior and by temporal smoothness). That is why a
+point estimate is only a summary, and the full posterior draws are what feed the
+downstream nested Ornstein-Uhlenbeck model by multiple imputation.
+
+### Where the engine is used here
+
+`test_reweighting_robustness()` perturbs the sectoral weighting scheme and asks
+whether the estimated coupling survives. Each perturbed scheme is a
+constant-in-time prior vector, replicated across periods to form the weight
+matrix `W`; the sectoral levels are then the posterior median of the conjugate
+engine, *now genuinely conditioned on the CPI*:
+
+```{r reweight, eval=FALSE}
+# `path_cpi` and `path_weights` are Excel files; `X_matrix` is the production-side
+# panel. The function reads the CPI, aligns it to the weight years, and for each
+# alternative prior calls disaggregate_conjugate() internally.
+rw <- test_reweighting_robustness(path_cpi, path_weights, X_matrix,
+                                  max_comp = 3, seed = 11)
+rw$cv_coupling   # coefficient of variation of the coupling across schemes
+rw$robust        # TRUE if CV < 0.30
+```
+
+The whole routine is reproducible: the seed now governs not only the alternative
+priors but also the data diagnosis and the cross-validated component selection,
+so the couplings no longer depend on call order.
+
+## 2. Leave-Cluster-Out
+
+### Why a cluster, not a single sector
+
+`test_jackknife_sectors()` drops one sector (one column) at a time. Under
+cross-sectional dependence of the input-output kind -- where sectors are linked
+by intermediate demand, the relationships catalogued in a Leontief table (the
+"MIP") -- dropping a single sector is optimistic: the information of the excluded
+sector leaks back in through its near-collinear neighbours in the same value
+chain. The coupling then looks more stable than it is.
+
+`test_leave_cluster_out()` removes an **entire value chain** at once. With a whole
+chain gone, the prediction can no longer lean on a removed sector's neighbours;
+it must rely on the general gravitation. This is the cross-sectional companion of
+the temporal nulls already in the package (the circular time-shift / moving-block
+bootstrap in `rotation_null_test()` and `test_permutation_robustness()`, which
+break dependence along time). It reuses the same coupling pipeline as the
+jackknife -- it does not reimplement it.
+
+### The cluster map is pluggable
+
+The genuine clusters are value chains defined by inter-industry linkages, and the
+partition is supplied by the user as `cluster_map` (a per-sector label vector, or
+a named list mapping each cluster to its sector names):
+
+```{r lco-data}
+set.seed(123)
+Tn <- 30; K <- 6
+f   <- cumsum(rnorm(Tn))
+Phi <- sapply(1:K, function(k) 100 + 5 * f + rnorm(Tn, 0, 1))   # production side
+phi <- sapply(1:K, function(k) Phi[, k] + rnorm(Tn, 0, 0.5))    # market side
+colnames(Phi) <- colnames(phi) <- paste0("sector_", 1:K)
+
+chains <- list(chainA = c("sector_1", "sector_2"),
+               chainB = c("sector_3", "sector_4"),
+               chainC = c("sector_5", "sector_6"))
+lco <- test_leave_cluster_out(Phi, phi, cluster_map = chains, seed = 7,
+                              verbose = FALSE)
+lco$baseline
+lco$cluster_estimates     # coupling with each chain removed
+lco$robust                # TRUE if no chain changes the coupling by > 50%
+```
+
+### A documented fallback until the MIP arrives
+
+When no `cluster_map` is supplied, a **fallback** partition is built with
+`build_cluster_map()` and a message flags its use. The fallback is an explicit
+*stopgap proxy*, not a demand-linkage partition:
+
+- `"correlation"` groups sectors by average-linkage hierarchical clustering on
+  the correlation distance `1 - rho` between the sectoral series (co-movement);
+- `"com"` bins a per-sector organic-composition vector into quantile groups
+  (sectors of similar organic composition share a profit-rate neighbourhood).
+
+```{r fallback}
+build_cluster_map(phi, n_clusters = 3, method = "correlation")
+```
+
+Neither correlation nor organic composition reproduces input-output linkages;
+they are one-dimensional proxies. Supply the real partition through `cluster_map`
+once the Leontief table is at hand.
+
+### Reading the statistical layer honestly
+
+`bias` and `se` are the delete-a-group (block) jackknife estimates over the
+cluster-deletion replicates. They are well calibrated for roughly balanced
+clusters; with strongly unequal clusters they are an approximate, conservative
+summary. The primary outputs are the per-cluster `influence`/`retention` and the
+`robust` verdict, which is a robustness diagnostic, not a coupling point
+estimate. The verdict means exactly "no single value chain moves the coupling by
+more than half" -- a statement about predictive stability under cross-sectional
+dependence, with no topological content.
+
+The Leave-Cluster-Out is strictly more demanding than the single-sector
+jackknife: dropping a whole chain removes more shared variation, so a coupling
+that is robust to one-sector deletion can still be sensitive to chain deletion.
+That gap is the point of the test.

@@ -29,5 +29,10 @@ tests, and visualization utilities.
 \author{
 \strong{Maintainer}: José Mauricio Gómez Julián \email{isadorenabi@pm.me}
 
+Authors:
+\itemize{
+  \item José Mauricio Gómez Julián \email{isadorenabi@pm.me}
+}
+
 }
 \keyword{internal}
