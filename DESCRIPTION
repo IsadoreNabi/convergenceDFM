@@ -1,8 +1,8 @@
 Package: convergenceDFM
 Type: Package
 Title: Convergence and Dynamic Factor Models
-Version: 0.3.1
-Authors@R: person("José Mauricio", "Gómez Julián", email = "isadorenabi@pm.me", role = c("aut", "cre"))
+Version: 0.3.2
+Authors@R: person("José Mauricio", "Gómez Julián", email = "isadore.nabi@pm.me", role = c("aut", "cre"), comment = c(ORCID = "0009-0000-2412-3150"))
 Description: Tests convergence in macro-financial panels combining
     Dynamic Factor Models (DFM) and mean-reverting, discrete-time
     Ornstein-Uhlenbeck/AR(1) factor processes. Provides: (i) static factor
@@ -29,13 +29,11 @@ Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
 Depends: R (>= 4.1)
 Imports: stats, methods, parallel, pls, vars, urca, readxl, dplyr,
-        tidyr, stringr, magrittr, zoo, BayesianDisaggregation
+        tidyr, stringr, magrittr, zoo, BayesianDisaggregation (>= 0.2.1)
 Suggests: testthat (>= 3.0.0), knitr, rmarkdown, cmdstanr, posterior,
         rstan, sandwich, lmtest
 Additional_repositories: https://mc-stan.org/r-packages/
 VignetteBuilder: knitr
 Config/testthat/edition: 3
 NeedsCompilation: no
-Author: José Mauricio Gómez Julián [aut, cre]
-Maintainer: José Mauricio Gómez Julián <isadorenabi@pm.me>
 Config/roxygen2/version: 8.0.0

@@ -1,3 +1,23 @@
+# convergenceDFM 0.3.2
+
+## Cross-platform reproducibility of the regression (golden) tests
+
+* **Portable golden tolerances.** The Leave-Cluster-Out and reweighting golden
+  tests previously asserted *bit-exact* equality (`expect_identical`) against
+  fixtures frozen on the development machine. The underlying computations run
+  through floating-point linear algebra (BLAS), whose last few significant
+  digits are not portable across CRAN's heterogeneous platforms / BLAS builds,
+  so the bit-exact assertions failed on the CRAN check farm at the ~1e-11
+  (Leave-Cluster-Out) and ~1e-7 (reweighting) level. The portable invariant is
+  now numerical: `expect_equal()` with tolerances (`1e-6` and `1e-5`
+  respectively) that absorb the non-portable noise while staying two-to-five
+  orders below the scale of any genuine algorithmic regression. The stronger
+  bit-exact assertion is retained as a developer-machine guard via
+  `skip_on_cran()`. Logical outputs (`robust`) remain compared bit-exactly, as
+  they are platform-invariant. No package code changed; this is a test-rigor
+  fix that keeps the three rigor layers (algebraic / statistical / numerical)
+  strictly separate.
+
 # convergenceDFM 0.3.1
 
 ## Wedge diagnostics for the transformation problem
